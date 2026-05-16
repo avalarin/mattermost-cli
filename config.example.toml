@@ -1,0 +1,14 @@
+[server]
+url   = "https://mattermost.example.com"
+token = "your-personal-access-token"
+team  = "my-team"           # team slug
+
+[ai]
+api_key = ""                # or set ANTHROPIC_API_KEY env var
+model   = "claude-sonnet-4-6"
+enabled = false
+
+[ui]
+date_format   = "15:04"     # or "2006-01-02 15:04"
+message_limit = 100
+theme         = "auto"      # "auto" | "dark" | "light"
