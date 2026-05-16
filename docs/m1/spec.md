@@ -254,7 +254,7 @@ tui/model.go → Update() → View()
 
 ---
 
-### T4: Mattermost types + REST client
+### ✅ T4: Mattermost types + REST client
 
 **Что делаем** (объединены бывшие T3+T4):
 - Типы: `Team`, `Channel`, `User`, `Message`, `Event` и константы event-типов

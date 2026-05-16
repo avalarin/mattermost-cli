@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -8,6 +9,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// ConnStatus represents the WebSocket connection state shown in the header.
+type ConnStatus string
+
+const (
+	ConnStatusConnecting ConnStatus = "connecting"
+	ConnStatusConnected  ConnStatus = "connected"
+)
+
+// HeaderInfo holds the data displayed in the application header.
+type HeaderInfo struct {
+	TeamName string
+	Username string
+	Status   ConnStatus
+}
 
 // Mode represents the current input mode of the TUI.
 type Mode int
@@ -24,6 +40,7 @@ type Model struct {
 	width     int
 	height    int
 	mode      Mode
+	header    HeaderInfo
 	input     textinput.Model
 	viewport  viewport.Model
 	statusMsg string
@@ -48,6 +65,14 @@ func NewModel() Model {
 // NewModelWithStatus creates a new Model with an initial status bar message.
 func NewModelWithStatus(status string) Model {
 	m := NewModel()
+	m.statusMsg = status
+	return m
+}
+
+// NewModelWithHeader creates a Model with pre-loaded header info and initial status.
+func NewModelWithHeader(header HeaderInfo, status string) Model {
+	m := NewModel()
+	m.header = header
 	m.statusMsg = status
 	return m
 }
@@ -207,12 +232,26 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader() string {
-	title := "mattermost-cli"
+	parts := []string{"mattermost-cli"}
+
+	status := m.header.Status
+	if status == "" {
+		status = ConnStatusConnecting
+	}
+	parts = append(parts, fmt.Sprintf("[%s]", status))
+
+	if m.header.TeamName != "" {
+		parts = append(parts, "team: "+m.header.TeamName)
+	}
+	if m.header.Username != "" {
+		parts = append(parts, "@"+m.header.Username)
+	}
+
 	style := lipgloss.NewStyle().
 		Bold(true).
 		Width(m.width).
 		Foreground(lipgloss.Color("205"))
-	return style.Render(title)
+	return style.Render(strings.Join(parts, "  "))
 }
 
 func (m Model) renderStatusBar() string {

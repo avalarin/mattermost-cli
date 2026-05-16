@@ -5,7 +5,8 @@
       "Bash(go build *)",
       "Bash(just check *)",
       "Bash(git *)",
-      "Bash(gh auth *)"
+      "Bash(gh auth *)",
+      "Bash(gh run *)"
     ]
   }
 }
