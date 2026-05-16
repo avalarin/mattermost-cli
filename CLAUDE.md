@@ -1,6 +1,6 @@
 # mattermost-cli
 
-Terminal TUI client for Mattermost with built-in Claude AI agent. Go 1.23, module `github.com/avalarin/mattermost-cli`.
+Terminal TUI client for Mattermost with built-in Claude AI agent. Go 1.24, module `github.com/avalarin/mattermost-cli`.
 
 ## Build, test, lint
 
