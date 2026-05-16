@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -73,7 +74,7 @@ func loadStartupState(path string) (tui.HeaderInfo, string) {
 		os.Exit(1)
 	}
 
-	client := mattermost.NewClient(cfg.Server.URL, cfg.Server.Token)
+	client := mattermost.NewClientWithTimeout(cfg.Server.URL, cfg.Server.Token, 15*time.Second)
 
 	user, err := client.GetCurrentUser()
 	if err != nil {

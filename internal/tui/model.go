@@ -62,13 +62,6 @@ func NewModel() Model {
 	}
 }
 
-// NewModelWithStatus creates a new Model with an initial status bar message.
-func NewModelWithStatus(status string) Model {
-	m := NewModel()
-	m.statusMsg = status
-	return m
-}
-
 // NewModelWithHeader creates a Model with pre-loaded header info and initial status.
 func NewModelWithHeader(header HeaderInfo, status string) Model {
 	m := NewModel()

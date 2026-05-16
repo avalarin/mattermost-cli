@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 var (
@@ -26,12 +27,18 @@ type Client struct {
 	currentUserID string // cached after GetCurrentUser
 }
 
-// NewClient creates a new Mattermost REST client.
+// NewClient creates a new Mattermost REST client with no request timeout.
 func NewClient(url, token string) *Client {
+	return NewClientWithTimeout(url, token, 0)
+}
+
+// NewClientWithTimeout creates a new Mattermost REST client with the given request timeout.
+// Use timeout=0 for no timeout (useful in tests with a local httptest server).
+func NewClientWithTimeout(url, token string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL:    url,
 		token:      token,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: timeout},
 	}
 }
 
