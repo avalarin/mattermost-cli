@@ -7,21 +7,31 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+func mustModel(t *testing.T, m tea.Model) Model {
+	t.Helper()
+	typed, ok := m.(Model)
+	if !ok {
+		t.Fatalf("expected tui.Model, got %T", m)
+	}
+	return typed
+}
+
 func TestQuitCommandExits(t *testing.T) {
 	m := NewModel()
 
 	// Send window size to initialize viewport.
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
 
 	// Press "/" to enter command mode.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}); return updated }())
 
 	// Type "quit".
 	for _, r := range "quit" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(Model)
+		r := r
+		m = mustModel(t, func() tea.Model {
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			return updated
+		}())
 	}
 
 	// Press Enter to execute the command.
@@ -41,12 +51,10 @@ func TestCtrlCEmptyFieldShowsHint(t *testing.T) {
 	m := NewModel()
 
 	// Send window size to initialize viewport.
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
 
 	// Ctrl+C with empty input in normal mode.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); return updated }())
 
 	if !strings.Contains(strings.ToLower(m.StatusMsg()), "quit") {
 		t.Errorf("expected hint about /quit in status bar, got: %q", m.StatusMsg())
@@ -56,15 +64,16 @@ func TestCtrlCEmptyFieldShowsHint(t *testing.T) {
 func TestSlashOpensCommandMode(t *testing.T) {
 	m := NewModel()
 
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
 
 	if m.mode != ModeNormal {
 		t.Fatal("expected ModeNormal initially")
 	}
 
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		return updated
+	}())
 
 	if m.mode != ModeCommand {
 		t.Errorf("expected ModeCommand after pressing '/', got %v", m.mode)
@@ -74,20 +83,20 @@ func TestSlashOpensCommandMode(t *testing.T) {
 func TestEscCancelsCommand(t *testing.T) {
 	m := NewModel()
 
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
 
 	// Enter command mode.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		return updated
+	}())
 
 	if m.mode != ModeCommand {
 		t.Fatal("expected ModeCommand after pressing '/'")
 	}
 
 	// Press Esc to cancel.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); return updated }())
 
 	if m.mode != ModeNormal {
 		t.Errorf("expected ModeNormal after Esc, got %v", m.mode)
@@ -101,21 +110,24 @@ func TestEscCancelsCommand(t *testing.T) {
 func TestCtrlCClearsInput(t *testing.T) {
 	m := NewModel()
 
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
 
 	// Enter command mode and type some text.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model {
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+		return updated
+	}())
 
 	for _, r := range "send" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(Model)
+		r := r
+		m = mustModel(t, func() tea.Model {
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+			return updated
+		}())
 	}
 
 	// Ctrl+C should clear input and return to normal mode.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	m = updated.(Model)
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); return updated }())
 
 	if m.mode != ModeNormal {
 		t.Errorf("expected ModeNormal after Ctrl+C with text, got %v", m.mode)

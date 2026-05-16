@@ -6,7 +6,6 @@ linters:
     - errcheck
     - govet
     - staticcheck
-
-linters-settings:
-  errcheck:
-    check-type-assertions: true
+  settings:
+    errcheck:
+      check-type-assertions: true
