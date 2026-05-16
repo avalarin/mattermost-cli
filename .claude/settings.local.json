@@ -3,7 +3,9 @@
     "allow": [
       "Bash(go mod *)",
       "Bash(go build *)",
-      "Bash(just *)"
+      "Bash(just check *)",
+      "Bash(git *)",
+      "Bash(gh auth *)"
     ]
   }
 }
