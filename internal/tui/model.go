@@ -107,7 +107,7 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, feedHeight)
-		m.viewport.SetContent("Waiting for messages... (no config loaded)")
+		m.viewport.SetContent("Waiting for messages...")
 		m.ready = true
 	} else {
 		m.viewport.Width = m.width

@@ -289,7 +289,7 @@ tui/model.go → Update() → View()
 
 ---
 
-### T5: TUI feed + header + команды `/quit`
+### ✅ T5: TUI feed + header + команды `/quit`
 
 **Что делаем** (скелет TUI, виден с этой задачи):
 - Root Bubble Tea model: `Init`, `Update`, `View`

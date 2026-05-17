@@ -107,6 +107,19 @@ func TestEscCancelsCommand(t *testing.T) {
 	}
 }
 
+func TestLayoutHeightFitsWindow(t *testing.T) {
+	m := NewModel()
+	const width, height = 100, 30
+	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height}); return updated }())
+
+	// Layout: header(1) + feed(height-3) + statusbar(1) + input(1) = height.
+	// Viewport height must equal height - 3.
+	wantFeedHeight := height - 3
+	if m.viewport.Height != wantFeedHeight {
+		t.Errorf("expected viewport height %d, got %d", wantFeedHeight, m.viewport.Height)
+	}
+}
+
 func TestCtrlCClearsInput(t *testing.T) {
 	m := NewModel()
 
