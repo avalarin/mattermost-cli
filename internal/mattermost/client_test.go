@@ -130,6 +130,63 @@ func TestGetUserByUsername_NotFound(t *testing.T) {
 	}
 }
 
+func TestGetChannelPosts_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/channels/chan1/posts" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"order": []string{"id2", "id1"},
+			"posts": map[string]interface{}{
+				"id1": map[string]interface{}{
+					"id": "id1", "channel_id": "chan1", "user_id": "u1",
+					"message": "first", "create_at": 1000, "root_id": "", "reply_count": 2,
+				},
+				"id2": map[string]interface{}{
+					"id": "id2", "channel_id": "chan1", "user_id": "u2",
+					"message": "second", "create_at": 2000, "root_id": "", "reply_count": 0,
+				},
+			},
+		})
+	}))
+
+	msgs, err := client.GetChannelPosts("chan1", 0, 100)
+	if err != nil {
+		t.Fatalf("GetChannelPosts() error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	// Order should be oldest-first (id1 before id2).
+	if msgs[0].ID != "id1" {
+		t.Errorf("msgs[0].ID = %q, want %q", msgs[0].ID, "id1")
+	}
+	if msgs[1].ID != "id2" {
+		t.Errorf("msgs[1].ID = %q, want %q", msgs[1].ID, "id2")
+	}
+	// ReplyCount must be mapped.
+	if msgs[0].ReplyCount != 2 {
+		t.Errorf("msgs[0].ReplyCount = %d, want 2", msgs[0].ReplyCount)
+	}
+}
+
+func TestGetChannelPosts_Pagination(t *testing.T) {
+	var capturedQuery string
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		writeJSON(w, map[string]interface{}{"order": []string{}, "posts": map[string]interface{}{}})
+	}))
+
+	_, err := client.GetChannelPosts("chan1", 3, 50)
+	if err != nil {
+		t.Fatalf("GetChannelPosts() error: %v", err)
+	}
+	if capturedQuery != "page=3&per_page=50" {
+		t.Errorf("query = %q, want %q", capturedQuery, "page=3&per_page=50")
+	}
+}
+
 func TestMessageIsReply(t *testing.T) {
 	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]interface{}{

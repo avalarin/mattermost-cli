@@ -309,7 +309,7 @@ Mark as read (при скролле в дно):
 
 ---
 
-### T2: Переключение канала + REST-история + infinite scroll + /reload
+### ✅ T2: Переключение канала + REST-история + infinite scroll + /reload
 
 **Что делаем:**
 

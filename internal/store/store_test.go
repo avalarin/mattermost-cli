@@ -152,6 +152,53 @@ func TestAddMessageCap(t *testing.T) {
 	}
 }
 
+func TestStoreAddChannelMessages(t *testing.T) {
+	s := openMemoryStore(t)
+
+	msgs := []Message{
+		{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u1", Text: "first"},
+		{ID: "m2", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 200, UserID: "u1", Text: "second"},
+	}
+	s.AddChannelMessages("c1", msgs, false)
+
+	got := s.GetChannelMessages("c1")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(got))
+	}
+	if got[0].ID != "m1" {
+		t.Errorf("got[0].ID = %q, want %q", got[0].ID, "m1")
+	}
+	if got[1].ID != "m2" {
+		t.Errorf("got[1].ID = %q, want %q", got[1].ID, "m2")
+	}
+}
+
+func TestStoreAddChannelMessagesPrepend(t *testing.T) {
+	s := openMemoryStore(t)
+
+	newer := []Message{
+		{ID: "m2", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 200, UserID: "u1", Text: "newer"},
+	}
+	s.AddChannelMessages("c1", newer, false)
+
+	older := []Message{
+		{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u1", Text: "older"},
+	}
+	s.AddChannelMessages("c1", older, true)
+
+	got := s.GetChannelMessages("c1")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 messages after prepend, got %d", len(got))
+	}
+	// After prepend, older messages come first.
+	if got[0].ID != "m1" {
+		t.Errorf("got[0].ID = %q, want %q (older message should be first)", got[0].ID, "m1")
+	}
+	if got[1].ID != "m2" {
+		t.Errorf("got[1].ID = %q, want %q", got[1].ID, "m2")
+	}
+}
+
 func TestLoadRecent(t *testing.T) {
 	db := openMemoryDB(t)
 

@@ -82,6 +82,9 @@ type Model struct {
 	showModeIndicator bool                 // when true, status bar shows current mode badge
 	activeHeaderFg    string               // foreground color for the active panel header
 	activeHeaderBg    string               // background color for the active panel header
+
+	activePage     map[string]int // channelID → next page to load (for infinite scroll)
+	historyLoading bool           // true while a channel history fetch is in flight
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -119,6 +122,7 @@ func NewModel() Model {
 		statusMsg:     "",
 		channelsWidth: 22,
 		messagesView:  NewMessagesView(nil),
+		activePage:    make(map[string]int),
 	}
 }
 
@@ -210,6 +214,14 @@ func buildRegistry(client *mattermost.Client, teamID string) *Registry {
 		Execute: makeHelpCmd(r),
 	})
 
+	r.Register(&CommandDef{
+		Name:        "reload",
+		Description: "Load more message history for the current channel",
+		Execute: func(_ map[string]string) tea.Cmd {
+			return func() tea.Msg { return MsgRequestReload{} }
+		},
+	})
+
 	return r
 }
 
@@ -273,6 +285,27 @@ func clearStatusAfter(d time.Duration, gen int) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(d)
 		return MsgClearStatus{Gen: gen}
+	}
+}
+
+// loadChannelHistoryCmd returns a tea.Cmd that fetches channel history from REST.
+// prepend=true is used for infinite scroll (older messages prepended at the top).
+func loadChannelHistoryCmd(client *mattermost.Client, channelID string, page int, prepend bool) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return MsgChannelHistory{
+				ChannelID: channelID,
+				Err:       errors.New("not connected"),
+				Prepend:   prepend,
+			}
+		}
+		msgs, err := client.GetChannelPosts(channelID, page, 100)
+		return MsgChannelHistory{
+			ChannelID: channelID,
+			Messages:  msgs,
+			Prepend:   prepend,
+			Err:       err,
+		}
 	}
 }
 
@@ -470,8 +503,106 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MsgChannelSelected:
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
-		// In T1, no actual channel filtering yet — just update state.
+		if msg.ChannelID == "" {
+			// All Activity: show global feed (already in messagesView).
+			return m, nil
+		}
+		// Load first page of history for this channel.
+		m.historyLoading = true
+		m.activePage[msg.ChannelID] = 0
+		channelID := msg.ChannelID
+		return m, tea.Batch(
+			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: channelID} },
+			loadChannelHistoryCmd(m.client, channelID, 0, false),
+		)
+
+	case MsgChannelHistoryLoading:
+		m.historyLoading = true
 		return m, nil
+
+	case MsgChannelHistory:
+		m.historyLoading = false
+		if msg.Err != nil {
+			m.statusMsg = "Failed to load history: " + msg.Err.Error()
+			m.statusIsError = true
+			m.statusGen++
+			return m, clearStatusAfter(3*time.Second, m.statusGen)
+		}
+		if msg.ChannelID != m.activeChannelID {
+			// Channel switched while loading; discard stale result.
+			return m, nil
+		}
+		// Convert REST messages to store messages.
+		storeMessages := make([]store.Message, 0, len(msg.Messages))
+		for _, p := range msg.Messages {
+			sm := store.Message{
+				ID:          p.ID,
+				ChannelID:   p.ChannelID,
+				UserID:      p.UserID,
+				Text:        p.Text,
+				CreateAt:    p.CreateAt,
+				RootID:      p.RootID,
+				SenderName:  p.UserID, // username resolution not available via REST history in T2
+				ChannelName: m.channels[p.ChannelID],
+			}
+			if sm.ChannelName == "" {
+				sm.ChannelName = p.ChannelID
+			}
+			storeMessages = append(storeMessages, sm)
+		}
+		if m.store != nil {
+			m.store.AddChannelMessages(msg.ChannelID, storeMessages, msg.Prepend)
+		}
+		// Increment page counter.
+		if !msg.Prepend {
+			m.activePage[msg.ChannelID] = 1
+		} else {
+			m.activePage[msg.ChannelID]++
+		}
+		// Build feed items from channel cache.
+		var channelMsgs []store.Message
+		if m.store != nil {
+			channelMsgs = m.store.GetChannelMessages(msg.ChannelID)
+		} else {
+			channelMsgs = storeMessages
+		}
+		items := make([]feedItem, 0, len(channelMsgs))
+		for _, sm := range channelMsgs {
+			items = append(items, feedItem{
+				kind: feedItemKindMessage,
+				msg: feedMessage{
+					post: mattermost.Message{
+						ID:        sm.ID,
+						ChannelID: sm.ChannelID,
+						UserID:    sm.UserID,
+						Text:      sm.Text,
+						CreateAt:  sm.CreateAt,
+						RootID:    sm.RootID,
+					},
+					senderName:  sm.SenderName,
+					channelName: sm.ChannelName,
+				},
+			})
+		}
+		m.messagesView = m.messagesView.SetFeedItems(items)
+		if !msg.Prepend {
+			m.messagesView = m.messagesView.GotoBottom()
+		}
+		return m, nil
+
+	case MsgRequestReload:
+		if m.activeChannelID == "" {
+			m.statusMsg = "Not in a channel: use /reload only inside a specific channel"
+			m.statusIsError = true
+			m.statusGen++
+			return m, clearStatusAfter(3*time.Second, m.statusGen)
+		}
+		page := m.activePage[m.activeChannelID]
+		m.historyLoading = true
+		return m, tea.Batch(
+			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: m.activeChannelID} },
+			loadChannelHistoryCmd(m.client, m.activeChannelID, page, true),
+		)
 
 	case MsgDMNamesResolved:
 		m.channelsView = m.channelsView.ApplyDMNames(msg.Names)
@@ -657,6 +788,15 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.Up):
 		m.messagesView = m.messagesView.MoveCursorUp()
+		// Infinite scroll: load older messages when at the top (and view is non-empty).
+		if m.messagesView.AtTop() && !m.messagesView.IsEmpty() && m.activeChannelID != "" && !m.historyLoading {
+			page := m.activePage[m.activeChannelID]
+			m.historyLoading = true
+			return m, tea.Batch(
+				func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: m.activeChannelID} },
+				loadChannelHistoryCmd(m.client, m.activeChannelID, page, true),
+			)
+		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Down):
@@ -676,6 +816,15 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		n := m.messagesView.PageSize()
 		for i := 0; i < n; i++ {
 			m.messagesView = m.messagesView.MoveCursorUp()
+		}
+		// Infinite scroll: load older messages when at the top (and view is non-empty).
+		if m.messagesView.AtTop() && !m.messagesView.IsEmpty() && m.activeChannelID != "" && !m.historyLoading {
+			page := m.activePage[m.activeChannelID]
+			m.historyLoading = true
+			return m, tea.Batch(
+				func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: m.activeChannelID} },
+				loadChannelHistoryCmd(m.client, m.activeChannelID, page, true),
+			)
 		}
 		return m, nil
 
@@ -869,27 +1018,34 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		channelName = name
 	}
 
-	if m.store != nil {
-		m.store.AddMessage(store.Message{
-			ID:          post.ID,
-			ChannelID:   post.ChannelID,
-			UserID:      post.UserID,
-			Text:        post.Text,
-			CreateAt:    post.CreateAt,
-			RootID:      post.RootID,
-			SenderName:  senderName,
-			ChannelName: channelName,
-		})
+	sm := store.Message{
+		ID:          post.ID,
+		ChannelID:   post.ChannelID,
+		UserID:      post.UserID,
+		Text:        post.Text,
+		CreateAt:    post.CreateAt,
+		RootID:      post.RootID,
+		SenderName:  senderName,
+		ChannelName: channelName,
 	}
 
-	m.messagesView = m.messagesView.AddFeedItem(feedItem{
-		kind: feedItemKindMessage,
-		msg: feedMessage{
-			post:        post,
-			senderName:  senderName,
-			channelName: channelName,
-		},
-	})
+	if m.store != nil {
+		m.store.AddMessage(sm)
+		// Also add to the per-channel cache.
+		m.store.AddChannelMessages(post.ChannelID, []store.Message{sm}, false)
+	}
+
+	// Only add to messages view if: All Activity OR message is in active channel.
+	if m.activeChannelID == "" || post.ChannelID == m.activeChannelID {
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{
+			kind: feedItemKindMessage,
+			msg: feedMessage{
+				post:        post,
+				senderName:  senderName,
+				channelName: channelName,
+			},
+		})
+	}
 
 	return m, nil
 }
@@ -953,6 +1109,9 @@ func (m Model) renderBody() string {
 // renderMessagesHeader renders the header line for the messages panel.
 func (m Model) renderMessagesHeader() string {
 	name := m.channelsView.DisplayNameByID(m.activeChannelID)
+	if m.historyLoading {
+		name = "⟳ " + name
+	}
 	msgsW := m.width - m.channelsWidth - 1
 	if msgsW < 1 {
 		msgsW = 1

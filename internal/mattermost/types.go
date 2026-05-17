@@ -34,12 +34,13 @@ type User struct {
 
 // Message represents a Mattermost post.
 type Message struct {
-	ID        string `json:"id"`
-	ChannelID string `json:"channel_id"`
-	UserID    string `json:"user_id"`
-	Text      string `json:"message"`
-	CreateAt  int64  `json:"create_at"`
-	RootID    string `json:"root_id"`
+	ID         string `json:"id"`
+	ChannelID  string `json:"channel_id"`
+	UserID     string `json:"user_id"`
+	Text       string `json:"message"`
+	CreateAt   int64  `json:"create_at"`
+	RootID     string `json:"root_id"`
+	ReplyCount int    `json:"reply_count"`
 }
 
 // Event represents a Mattermost WebSocket event.
