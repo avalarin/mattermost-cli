@@ -388,7 +388,7 @@ func TestFeedRenderReply(t *testing.T) {
 		RootID:   "parent-id",
 	}
 
-	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", "02.01.2006", 120, false)
+	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", "02.01.2006", 120, false, true)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected thread reply indicator ↩ in line, got: %q", line)
@@ -412,7 +412,7 @@ func TestFeedRenderReplyNoParent(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "bob", "general", "", "02.01.2006", 120, false)
+	line := renderMessageLine(post, "bob", "general", "", "02.01.2006", 120, false, true)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected ↩ indicator even without parent snippet, got: %q", line)
@@ -433,7 +433,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "charlie", "random", "", "02.01.2006", 120, false)
+	line := renderMessageLine(post, "charlie", "random", "", "02.01.2006", 120, false, false)
 
 	if strings.Contains(line, "↩") {
 		t.Errorf("expected no ↩ for top-level message, got: %q", line)
@@ -452,7 +452,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 // testModelWithClient builds a Model wired to the given client and initializes the viewport.
 func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
 	t.Helper()
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237", "")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237", "", "root_only")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mustModel(t, updated)
 }
@@ -543,7 +543,7 @@ func TestFeedRenderWordWrap(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "dave", "chan", "", "02.01.2006", 40, false)
+	line := renderMessageLine(post, "dave", "chan", "", "02.01.2006", 40, false, false)
 
 	lines := strings.Split(line, "\n")
 	// header line + up to 3 body lines + optional ⌄⌄⌄ = at most 5 lines
@@ -634,7 +634,7 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 
 // TestHelpPopupOpens: /help with no args opens ModeHelp.
 func TestHelpPopupOpens(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
 	m = initModel(t, m)
 
 	// Type "/help" and press Enter.
@@ -765,7 +765,7 @@ func TestChannelSelectLoadsHistory(t *testing.T) {
 
 // TestReloadCommandNoChannel verifies that /reload without an active channel yields an error status.
 func TestReloadCommandNoChannel(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
 	m = initModel(t, m)
 	// activeChannelID is "" by default (All Activity).
 
@@ -831,7 +831,7 @@ func TestReloadCommandActiveChannel(t *testing.T) {
 
 // TestMsgChannelHistoryUpdatesView verifies that MsgChannelHistory updates the messages view.
 func TestMsgChannelHistoryUpdatesView(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 
@@ -852,6 +852,97 @@ func TestMsgChannelHistoryUpdatesView(t *testing.T) {
 	}
 	if m.historyLoading {
 		t.Error("expected historyLoading=false after MsgChannelHistory")
+	}
+}
+
+// TestMessagesViewFilterRoot verifies that replies are excluded from the channel view in root_only mode.
+func TestMessagesViewFilterRoot(t *testing.T) {
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m = initModel(t, m)
+	m.activeChannelID = "chan1"
+
+	posts := []mattermost.Message{
+		{ID: "root-1", ChannelID: "chan1", UserID: "u1", Text: "root message", CreateAt: 1000},
+		{ID: "reply-1", ChannelID: "chan1", UserID: "u1", Text: "reply text", CreateAt: 2000, RootID: "root-1"},
+	}
+	updated, _ := m.Update(MsgChannelHistory{
+		ChannelID: "chan1",
+		Messages:  posts,
+	})
+	m = mustModel(t, updated)
+
+	view := m.messagesView.View()
+	if !strings.Contains(view, "root message") {
+		t.Error("expected root message in view")
+	}
+	if strings.Contains(view, "reply text") {
+		t.Error("expected reply to be filtered out in root_only mode")
+	}
+}
+
+// TestMessagesViewShowAll verifies that replies appear in channel view when channel_messages=all.
+func TestMessagesViewShowAll(t *testing.T) {
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "all")
+	m = initModel(t, m)
+	m.activeChannelID = "chan1"
+
+	posts := []mattermost.Message{
+		{ID: "root-1", ChannelID: "chan1", UserID: "u1", Text: "root message", CreateAt: 1000},
+		{ID: "reply-1", ChannelID: "chan1", UserID: "u1", Text: "reply text", CreateAt: 2000, RootID: "root-1"},
+	}
+	updated, _ := m.Update(MsgChannelHistory{
+		ChannelID: "chan1",
+		Messages:  posts,
+	})
+	m = mustModel(t, updated)
+
+	view := m.messagesView.View()
+	if !strings.Contains(view, "root message") {
+		t.Error("expected root message in view")
+	}
+	if !strings.Contains(view, "reply text") {
+		t.Error("expected reply to appear in view when channel_messages=all")
+	}
+}
+
+// TestIncrementReplyCountOnWSPost verifies that a WS reply event increments the parent's badge.
+func TestIncrementReplyCountOnWSPost(t *testing.T) {
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m = initModel(t, m)
+	m.activeChannelID = "chan1"
+	m.channels = map[string]string{"chan1": "general"}
+
+	// Load root message into the view.
+	rootPost := mattermost.Message{
+		ID: "root-1", ChannelID: "chan1", UserID: "u1", Text: "root", CreateAt: 1000,
+	}
+	updated, _ := m.Update(MsgChannelHistory{ChannelID: "chan1", Messages: []mattermost.Message{rootPost}})
+	m = mustModel(t, updated)
+
+	viewBefore := m.messagesView.View()
+	if strings.Contains(viewBefore, "⤵︎") {
+		t.Errorf("expected no reply badge before WS event, got: %q", viewBefore)
+	}
+
+	// Send a WS posted event for a reply.
+	replyPost := mattermost.Message{
+		ID: "reply-1", ChannelID: "chan1", UserID: "u2", Text: "reply", CreateAt: 2000, RootID: "root-1",
+	}
+	replyBytes, _ := json.Marshal(replyPost)
+	evt := mattermost.Event{
+		Type: mattermost.EventTypePosted,
+		Data: map[string]interface{}{
+			"post":         string(replyBytes),
+			"sender_name":  "@bob",
+			"channel_name": "general",
+		},
+	}
+	updated2, _ := m.Update(evt)
+	m = mustModel(t, updated2)
+
+	viewAfter := m.messagesView.View()
+	if !strings.Contains(viewAfter, "⤵︎ 1") {
+		t.Errorf("expected ⤵︎ 1 badge after reply WS event, got: %q", viewAfter)
 	}
 }
 

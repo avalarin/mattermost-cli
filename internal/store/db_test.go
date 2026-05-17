@@ -113,6 +113,55 @@ func TestGetRecentMessagesOrdering(t *testing.T) {
 	}
 }
 
+func TestInsertMessagePreservesReplyCount(t *testing.T) {
+	db := openMemoryDB(t)
+
+	msg := Message{
+		ID: "rc-1", ChannelID: "c", UserID: "u", Text: "hi",
+		SenderName: "s", ChannelName: "ch", CreateAt: 1, ReplyCount: 5,
+	}
+	if err := db.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := db.GetRecentMessages(10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected 1 message")
+	}
+	if msgs[0].ReplyCount != 5 {
+		t.Errorf("ReplyCount = %d, want 5", msgs[0].ReplyCount)
+	}
+}
+
+func TestIncrementReplyCountDB(t *testing.T) {
+	db := openMemoryDB(t)
+
+	msg := Message{ID: "root-1", ChannelID: "c", UserID: "u", Text: "root", SenderName: "s", ChannelName: "ch", CreateAt: 1}
+	if err := db.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	if err := db.IncrementReplyCount("root-1"); err != nil {
+		t.Fatalf("IncrementReplyCount: %v", err)
+	}
+	if err := db.IncrementReplyCount("root-1"); err != nil {
+		t.Fatalf("IncrementReplyCount second: %v", err)
+	}
+
+	got, err := db.GetMessageByID("root-1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ReplyCount != 2 {
+		t.Errorf("ReplyCount = %d, want 2", got.ReplyCount)
+	}
+}
+
 func TestGetMessageByID(t *testing.T) {
 	db := openMemoryDB(t)
 

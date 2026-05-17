@@ -21,6 +21,7 @@ type Message struct {
 	RootID      string
 	SenderName  string
 	ChannelName string
+	ReplyCount  int
 }
 
 // Store holds an in-memory message list (capped at 1000) backed by SQLite.
@@ -156,6 +157,32 @@ func (s *Store) GetChannelMessages(channelID string) []Message {
 	return result
 }
 
+// IncrementReplyCount increments the reply_count of the message with the given ID
+// in both the global in-memory list and all per-channel caches, then persists to the DB.
+func (s *Store) IncrementReplyCount(rootID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.messages {
+		if s.messages[i].ID == rootID {
+			s.messages[i].ReplyCount++
+			break
+		}
+	}
+
+	for channelID, msgs := range s.channelMessages {
+		for i := range msgs {
+			if msgs[i].ID == rootID {
+				s.channelMessages[channelID][i].ReplyCount++
+				break
+			}
+		}
+	}
+
+	if s.db != nil {
+		_ = s.db.IncrementReplyCount(rootID)
+	}
+}
 
 func truncate(s string, max int) string {
 	runes := []rune(s)

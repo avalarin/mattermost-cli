@@ -199,6 +199,38 @@ func TestStoreAddChannelMessagesPrepend(t *testing.T) {
 	}
 }
 
+func TestIncrementReplyCount(t *testing.T) {
+	s := openMemoryStore(t)
+
+	root := Message{ID: "root", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u", Text: "root msg"}
+	s.AddMessage(root)
+	s.AddChannelMessages("c1", []Message{root}, false)
+
+	s.IncrementReplyCount("root")
+	s.IncrementReplyCount("root")
+
+	// Check per-channel cache (public API).
+	got := s.GetChannelMessages("c1")
+	if len(got) == 0 {
+		t.Fatal("no messages in channel c1")
+	}
+	if got[0].ReplyCount != 2 {
+		t.Errorf("channel messages: ReplyCount = %d, want 2", got[0].ReplyCount)
+	}
+
+	// Check DB persistence.
+	dbMsg, err := s.db.GetMessageByID("root")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if dbMsg == nil {
+		t.Fatal("root message not found in DB")
+	}
+	if dbMsg.ReplyCount != 2 {
+		t.Errorf("DB: ReplyCount = %d, want 2", dbMsg.ReplyCount)
+	}
+}
+
 func TestLoadRecent(t *testing.T) {
 	db := openMemoryDB(t)
 
