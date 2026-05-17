@@ -507,7 +507,7 @@ type MsgNewMessage struct {
 Также будут popup окна (позже добавим):
 - поиск каналов (search_channel)
 - поиск по сообщениям (search_message)
-- просмотр сообщения и треда (thread)
+- просмотр сообщения и треда (thread_popup)
 
 Навигация по частям:
 - ctrl+b - переход в input
@@ -560,31 +560,14 @@ type MsgNewMessage struct {
 
 **Сценарии автотестов:**
 
-| # | Название | Что проверяем |
-|---|----------|---------------|
-| 1 | `TestUpArrowScrollsFeed` | `↑` в `ModeNormal` сдвигает viewport вверх |
-| 2 | `TestEndJumpsToBottom` | `End` → `atBottom = true`, viewport в конце |
-| 3 | `TestFeedAutoScrollAtBottom` | При `atBottom=true` и новом сообщении — viewport следует вниз |
-| 4 | `TestFeedNoAutoScrollWhenScrolledUp` | При `atBottom=false` и новом сообщении — позиция не меняется |
-| 5 | `TestNavKeysDisabledInCommandMode` | `↑`/`↓` в `ModeCommand` не меняют позицию feed |
-
----
-
-## Порядок реализации
-
-```
-T1 (scaffold + skeleton)  →  app запускается
-  └── T2 (GitHub CI)       →  CI зелёный на каждом PR
-        └── T3 (config)    →  показывает URL из конфига
-              └── T4 (REST + types)  →  показывает @username в шапке
-                    └── T5 (TUI)    →  полный интерфейс виден, /quit работает
-                          └── T6 (WS + feed)   →  живые сообщения в ленте
-                                └── T7 (store) →  персистентность
-                                      └── T8 (/send + DM)  →  отправка работает
-                                            └── T9 (navigation)  →  полный UX
-```
-
----
+| #   | Название                             | Что проверяем                                                 |
+| --- | ------------------------------------ | ------------------------------------------------------------- |
+| 1   | `TestUpArrowScrollsFeed`             | `↑` в `ModeNormal` сдвигает viewport вверх                    |
+| 2   | `TestEndJumpsToBottom`               | `End` → `atBottom = true`, viewport в конце                   |
+| 3   | `TestFeedAutoScrollAtBottom`         | При `atBottom=true` и новом сообщении — viewport следует вниз |
+| 4   | `TestFeedNoAutoScrollWhenScrolledUp` | При `atBottom=false` и новом сообщении — позиция не меняется  |
+| 5   | `TestNavKeysDisabledInCommandMode`   | `↑`/`↓` в `ModeCommand` не меняют позицию feed                |
+|     |                                      |                                                               |
 
 ## Технические детали
 
