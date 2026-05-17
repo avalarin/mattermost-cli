@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,26 +23,32 @@ func mustModel(t *testing.T, m tea.Model) Model {
 	return typed
 }
 
+// sendKey is a helper to send a single key event and return the updated model.
+func sendKey(t *testing.T, m Model, msg tea.KeyMsg) Model {
+	t.Helper()
+	updated, _ := m.Update(msg)
+	return mustModel(t, updated)
+}
+
+// initModel sends a WindowSizeMsg to initialize the viewport.
+func initModel(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return mustModel(t, updated)
+}
+
 func TestQuitCommandExits(t *testing.T) {
 	m := NewModel()
+	m = initModel(t, m)
 
-	// Send window size to initialize viewport.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
-
-	// Press "/" to enter command mode.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}}); return updated }())
-
-	// Type "quit".
-	for _, r := range "quit" {
+	// Type "/quit" into textarea.
+	for _, r := range "/quit" {
 		r := r
-		m = mustModel(t, func() tea.Model {
-			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-			return updated
-		}())
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 
-	// Press Enter to execute the command.
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Press Alt+Enter to execute the command.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
 
 	if cmd == nil {
 		t.Fatal("expected quit cmd, got nil")
@@ -55,61 +62,293 @@ func TestQuitCommandExits(t *testing.T) {
 
 func TestCtrlCEmptyFieldShowsHint(t *testing.T) {
 	m := NewModel()
+	m = initModel(t, m)
 
-	// Send window size to initialize viewport.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
+	// Ctrl+C with empty input in ModeInput clears and deselects (no error hint).
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
 
-	// Ctrl+C with empty input in normal mode.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); return updated }())
-
-	if !strings.Contains(strings.ToLower(m.StatusMsg()), "quit") {
-		t.Errorf("expected hint about /quit in status bar, got: %q", m.StatusMsg())
+	// statusIsError should not be set.
+	if m.statusIsError {
+		t.Errorf("expected no error after Ctrl+C with empty input, got statusIsError=true, msg=%q", m.StatusMsg())
 	}
-}
-
-func TestSlashOpensCommandMode(t *testing.T) {
-	m := NewModel()
-
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
-
-	if m.mode != ModeNormal {
-		t.Fatal("expected ModeNormal initially")
-	}
-
-	m = mustModel(t, func() tea.Model {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-		return updated
-	}())
-
-	if m.mode != ModeCommand {
-		t.Errorf("expected ModeCommand after pressing '/', got %v", m.mode)
-	}
-}
-
-func TestEscCancelsCommand(t *testing.T) {
-	m := NewModel()
-
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
-
-	// Enter command mode.
-	m = mustModel(t, func() tea.Model {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-		return updated
-	}())
-
-	if m.mode != ModeCommand {
-		t.Fatal("expected ModeCommand after pressing '/'")
-	}
-
-	// Press Esc to cancel.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}); return updated }())
-
-	if m.mode != ModeNormal {
-		t.Errorf("expected ModeNormal after Esc, got %v", m.mode)
-	}
-
+	// Input should still be empty.
 	if m.input.Value() != "" {
-		t.Errorf("expected empty input after Esc, got %q", m.input.Value())
+		t.Errorf("expected empty input after Ctrl+C, got %q", m.input.Value())
+	}
+}
+
+// TestCtrlCClearsInput: Ctrl+C in ModeInput clears textarea and deselects message.
+func TestCtrlCClearsInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Type some text.
+	for _, r := range "send" {
+		r := r
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	if m.input.Value() == "" {
+		t.Fatal("expected non-empty input after typing")
+	}
+
+	// Ctrl+C should clear input.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after Ctrl+C, got %v", m.mode)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("expected empty input after Ctrl+C, got %q", m.input.Value())
+	}
+}
+
+// TestFocusMessages: ctrl+j switches to ModeMessages.
+// Note: ctrl+m == enter in standard terminals; ctrl+j (keyLF) is used instead.
+func TestFocusMessages(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Add a feed item so selectLastMessage has something to select.
+	m.feedItems = append(m.feedItems, feedItem{
+		kind: feedItemKindMessage,
+		msg: feedMessage{
+			post:        mattermost.Message{ID: "msg1", Text: "hello"},
+			senderName:  "alice",
+			channelName: "general",
+		},
+	})
+	m = m.rerenderFeed()
+
+	// Send ctrl+j (focus messages key).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = mustModel(t, updated)
+
+	if m.mode != ModeMessages {
+		t.Errorf("expected ModeMessages after ctrl+m, got %v", m.mode)
+	}
+	if m.selectedMsgIdx < 0 {
+		t.Errorf("expected selectedMsgIdx >= 0 after entering ModeMessages, got %d", m.selectedMsgIdx)
+	}
+}
+
+// TestFocusInput: ctrl+b from ModeMessages switches to ModeInput.
+func TestFocusInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Put model in ModeMessages manually.
+	m.mode = ModeMessages
+
+	// Send ctrl+b.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
+	m = mustModel(t, updated)
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after ctrl+b, got %v", m.mode)
+	}
+}
+
+// TestEscReturnsToInput: Esc in ModeMessages returns to ModeInput.
+func TestEscReturnsToInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Put model in ModeMessages.
+	m.mode = ModeMessages
+
+	// Press Esc.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = mustModel(t, updated)
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after Esc from ModeMessages, got %v", m.mode)
+	}
+}
+
+// TestEmptyInputUpGoesToMessages: Up in ModeInput with empty input enters ModeMessages.
+func TestEmptyInputUpGoesToMessages(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Add a message so there's something to select.
+	m.feedItems = append(m.feedItems, feedItem{
+		kind: feedItemKindMessage,
+		msg: feedMessage{
+			post:        mattermost.Message{ID: "msg1", Text: "hello"},
+			senderName:  "alice",
+			channelName: "general",
+		},
+	})
+	m = m.rerenderFeed()
+
+	// Input should be empty.
+	if m.input.Value() != "" {
+		t.Fatal("input should be empty initially")
+	}
+
+	// Press Up.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = mustModel(t, updated)
+
+	if m.mode != ModeMessages {
+		t.Errorf("expected ModeMessages after Up with empty input, got %v", m.mode)
+	}
+}
+
+// TestEnterInInputShowsHint: Enter in ModeInput inserts newline and shows hint.
+func TestEnterInInputShowsHint(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Press Enter (no alt).
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = mustModel(t, updated)
+
+	if !strings.Contains(m.StatusMsg(), "Alt+Enter") {
+		t.Errorf("expected hint about Alt+Enter in status, got: %q", m.StatusMsg())
+	}
+}
+
+// TestNavKeysDisabledInInput: Up in ModeInput with non-empty input doesn't change mode.
+func TestNavKeysDisabledInInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Type something so input is non-empty.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+
+	if m.input.Value() == "" {
+		t.Fatal("expected non-empty input")
+	}
+
+	// Press Up — should NOT go to ModeMessages since input is non-empty.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = mustModel(t, updated)
+
+	if m.mode == ModeMessages {
+		t.Errorf("expected ModeInput after Up with non-empty input, got ModeMessages")
+	}
+}
+
+// TestEndJumpsToBottom: End in ModeMessages sets atBottom=true.
+func TestEndJumpsToBottom(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Add several messages.
+	for i := 0; i < 5; i++ {
+		m.feedItems = append(m.feedItems, feedItem{
+			kind: feedItemKindMessage,
+			msg: feedMessage{
+				post:        mattermost.Message{ID: fmt.Sprintf("msg%d", i), Text: "hello"},
+				senderName:  "alice",
+				channelName: "general",
+			},
+		})
+	}
+	m = m.rerenderFeed()
+	m.atBottom = false
+	m.mode = ModeMessages
+	m.selectedMsgIdx = 0
+
+	// Press End.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m = mustModel(t, updated)
+
+	if !m.atBottom {
+		t.Errorf("expected atBottom=true after End key, got false")
+	}
+}
+
+// TestFeedAutoScrollAtBottom: new message when atBottom=true auto-scrolls viewport.
+func TestFeedAutoScrollAtBottom(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+	m.atBottom = true
+
+	// Add a message via handlePostedEvent.
+	evt := buildPostedEvent("msg-auto", "general", "ch1", "alice", "new message")
+	updated, _ := m.handlePostedEvent(evt)
+	m = updated
+
+	// After auto-scroll, atBottom should remain true.
+	if !m.atBottom {
+		t.Errorf("expected atBottom=true after new message with atBottom=true, got false")
+	}
+}
+
+// TestFeedNoAutoScrollWhenScrolledUp: new message when atBottom=false doesn't scroll.
+func TestFeedNoAutoScrollWhenScrolledUp(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+	m.atBottom = false
+
+	offsetBefore := m.viewport.YOffset
+
+	evt := buildPostedEvent("msg-noscroll", "general", "ch1", "bob", "another message")
+	updated, _ := m.handlePostedEvent(evt)
+	m = updated
+
+	if m.atBottom {
+		t.Errorf("expected atBottom=false after new message when scrolled up, got true")
+	}
+	if m.viewport.YOffset != offsetBefore {
+		t.Errorf("expected viewport YOffset unchanged, before=%d after=%d", offsetBefore, m.viewport.YOffset)
+	}
+}
+
+// TestUpArrowScrollsFeed: Up in ModeMessages moves cursor to previous message.
+func TestUpArrowScrollsFeed(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Add two messages.
+	m.feedItems = append(m.feedItems,
+		feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg1", Text: "first"}, senderName: "alice", channelName: "general"}},
+		feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg2", Text: "second"}, senderName: "bob", channelName: "general"}},
+	)
+	m = m.rerenderFeed()
+	m.mode = ModeMessages
+	m.selectedMsgIdx = 1 // start at second message
+
+	// Press Up.
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = mustModel(t, updated)
+
+	if m.selectedMsgIdx != 0 {
+		t.Errorf("expected selectedMsgIdx=0 after Up, got %d", m.selectedMsgIdx)
+	}
+}
+
+// TestSlashInMessagesGoesToInput: pressing "/" in ModeMessages switches to ModeInput.
+func TestSlashInMessagesGoesToInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Add a message and enter ModeMessages.
+	m.feedItems = append(m.feedItems, feedItem{
+		kind: feedItemKindMessage,
+		msg:  feedMessage{post: mattermost.Message{ID: "msg1", Text: "hello"}, senderName: "alice", channelName: "general"},
+	})
+	m = m.rerenderFeed()
+	m.mode = ModeMessages
+	m.selectedMsgIdx = 0
+
+	// Press "/".
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = mustModel(t, updated)
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after '/' in ModeMessages, got %v", m.mode)
+	}
+	if m.input.Value() != "/" {
+		t.Errorf("expected input value '/', got %q", m.input.Value())
+	}
+	// Selected message should remain.
+	if m.selectedMsgIdx != 0 {
+		t.Errorf("expected selectedMsgIdx=0 to remain after '/' in ModeMessages, got %d", m.selectedMsgIdx)
 	}
 }
 
@@ -118,8 +357,9 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 	const width, height = 100, 30
 	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height}); return updated }())
 
-	// Layout: header(1) + divider(1) + feed(height-6) + divider(1) + statusbar(1) + input(1) + divider(1) = height.
-	wantFeedHeight := height - 6
+	// Layout: header(1) + divider(1) + feed + divider(1) + statusbar(1) + input(inputHeight=3) + divider(1)
+	// feedHeight = height - 5 - inputHeight
+	wantFeedHeight := height - 5 - inputHeight
 	if m.viewport.Height != wantFeedHeight {
 		t.Errorf("expected viewport height %d, got %d", wantFeedHeight, m.viewport.Height)
 	}
@@ -131,43 +371,12 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 	const width2, height2 = 120, 40
 	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width2, Height: height2}); return updated }())
 
-	wantFeedHeight2 := height2 - 6
+	wantFeedHeight2 := height2 - 5 - inputHeight
 	if m.viewport.Height != wantFeedHeight2 {
 		t.Errorf("after resize: expected viewport height %d, got %d", wantFeedHeight2, m.viewport.Height)
 	}
 	if m.viewport.Width != width2 {
 		t.Errorf("after resize: expected viewport width %d, got %d", width2, m.viewport.Width)
-	}
-}
-
-func TestCtrlCClearsInput(t *testing.T) {
-	m := NewModel()
-
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); return updated }())
-
-	// Enter command mode and type some text.
-	m = mustModel(t, func() tea.Model {
-		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
-		return updated
-	}())
-
-	for _, r := range "send" {
-		r := r
-		m = mustModel(t, func() tea.Model {
-			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-			return updated
-		}())
-	}
-
-	// Ctrl+C should clear input and return to normal mode.
-	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); return updated }())
-
-	if m.mode != ModeNormal {
-		t.Errorf("expected ModeNormal after Ctrl+C with text, got %v", m.mode)
-	}
-
-	if m.input.Value() != "" {
-		t.Errorf("expected empty input after Ctrl+C, got %q", m.input.Value())
 	}
 }
 
@@ -349,5 +558,100 @@ func TestFeedRenderWordWrap(t *testing.T) {
 	}
 	if !strings.Contains(lines[len(lines)-1], "more lines") {
 		t.Errorf("expected 'more lines' text in overflow indicator, got: %q", lines[len(lines)-1])
+	}
+}
+
+func TestDoubleEscClearsAndDeselects(t *testing.T) {
+	m := initModel(t, NewModel())
+
+	// Add a message and go to ModeMessages.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if m.mode != ModeMessages {
+		t.Fatalf("expected ModeMessages after ctrl+j, got %v", m.mode)
+	}
+
+	// First Esc from ModeMessages → goes to ModeInput, escPending=true, hint shown.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after first esc, got %v", m.mode)
+	}
+	if !m.escPending {
+		t.Error("expected escPending=true after first esc from ModeMessages")
+	}
+	if !strings.Contains(m.statusMsg, "Esc again") {
+		t.Errorf("expected hint in status bar, got %q", m.statusMsg)
+	}
+
+	// Second Esc from ModeInput → clears escPending, deselects.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.escPending {
+		t.Error("expected escPending=false after second esc")
+	}
+	if m.selectedMsgIdx != -1 {
+		t.Errorf("expected selectedMsgIdx=-1 after double esc, got %d", m.selectedMsgIdx)
+	}
+	if m.statusMsg != "" {
+		t.Errorf("expected empty status after double esc, got %q", m.statusMsg)
+	}
+}
+
+func TestStaleEscTimeoutIgnored(t *testing.T) {
+	m := initModel(t, NewModel())
+
+	// First esc → escPending=true, escGen incremented.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	gen := m.escGen
+
+	// Simulate a stale timeout with old gen.
+	updated, _ := m.Update(MsgEscTimeout{Gen: gen - 1})
+	m = mustModel(t, updated)
+
+	// escPending should still be true (stale timeout ignored).
+	if !m.escPending {
+		t.Error("stale MsgEscTimeout should not clear escPending")
+	}
+
+	// Correct gen timeout clears escPending.
+	updated, _ = m.Update(MsgEscTimeout{Gen: gen})
+	m = mustModel(t, updated)
+	if m.escPending {
+		t.Error("expected escPending=false after correct-gen MsgEscTimeout")
+	}
+}
+
+func TestCtrlCClearsAndDeselects(t *testing.T) {
+	m := initModel(t, NewModel())
+
+	// Go to ModeMessages (sets selectedMsgIdx if there are messages — but feed is empty).
+	// Manually set selectedMsgIdx to simulate a selection.
+	m.selectedMsgIdx = 0
+
+	// ctrl+c from ModeInput → clear + deselect.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+	if m.selectedMsgIdx != -1 {
+		t.Errorf("expected selectedMsgIdx=-1 after ctrl+c, got %d", m.selectedMsgIdx)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("expected empty input after ctrl+c, got %q", m.input.Value())
+	}
+}
+
+// buildPostedEvent creates a fake mattermost.Event of type "posted" for testing.
+func buildPostedEvent(msgID, channelName, channelID, senderName, text string) mattermost.Event {
+	post := mattermost.Message{
+		ID:        msgID,
+		ChannelID: channelID,
+		UserID:    "user1",
+		Text:      text,
+		CreateAt:  time.Now().UnixMilli(),
+	}
+	postBytes, _ := json.Marshal(post)
+	return mattermost.Event{
+		Type: mattermost.EventTypePosted,
+		Data: map[string]interface{}{
+			"post":         string(postBytes),
+			"sender_name":  "@" + senderName,
+			"channel_name": channelName,
+		},
 	}
 }

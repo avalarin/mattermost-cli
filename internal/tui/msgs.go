@@ -39,3 +39,6 @@ type MsgHistoryLoaded struct {
 type MsgSystemMessage struct {
 	Text string
 }
+
+// MsgEscTimeout signals that the double-esc window has expired.
+type MsgEscTimeout struct{ Gen int }
