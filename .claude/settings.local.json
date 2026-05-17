@@ -6,7 +6,15 @@
       "Bash(just check *)",
       "Bash(git *)",
       "Bash(gh auth *)",
-      "Bash(gh run *)"
+      "Bash(gh run *)",
+      "Skill(avalarin-skills:feature-dev)",
+      "Skill(avalarin-skills:create-pr)",
+      "Bash(just vet *)",
+      "Bash(just test *)",
+      "Bash(just lint *)",
+      "Bash(go get *)",
+      "Skill(avalarin-skills:code-review)",
+      "Bash(gofmt *)"
     ]
   }
 }
