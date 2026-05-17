@@ -388,7 +388,7 @@ func TestFeedRenderReply(t *testing.T) {
 		RootID:   "parent-id",
 	}
 
-	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", 120)
+	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", "02.01.2006", 120, false)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected thread reply indicator ↩ in line, got: %q", line)
@@ -412,7 +412,7 @@ func TestFeedRenderReplyNoParent(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "bob", "general", "", 120)
+	line := renderMessageLine(post, "bob", "general", "", "02.01.2006", 120, false)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected ↩ indicator even without parent snippet, got: %q", line)
@@ -433,7 +433,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "charlie", "random", "", 120)
+	line := renderMessageLine(post, "charlie", "random", "", "02.01.2006", 120, false)
 
 	if strings.Contains(line, "↩") {
 		t.Errorf("expected no ↩ for top-level message, got: %q", line)
@@ -452,7 +452,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 // testModelWithClient builds a Model wired to the given client and initializes the viewport.
 func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
 	t.Helper()
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237", "")
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mustModel(t, updated)
 }
@@ -543,7 +543,7 @@ func TestFeedRenderWordWrap(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "dave", "chan", "", 40)
+	line := renderMessageLine(post, "dave", "chan", "", "02.01.2006", 40, false)
 
 	lines := strings.Split(line, "\n")
 	// header line + up to 3 body lines + optional ⌄⌄⌄ = at most 5 lines
@@ -634,7 +634,7 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 
 // TestHelpPopupOpens: /help with no args opens ModeHelp.
 func TestHelpPopupOpens(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
 	m = initModel(t, m)
 
 	// Type "/help" and press Enter.
@@ -765,7 +765,7 @@ func TestChannelSelectLoadsHistory(t *testing.T) {
 
 // TestReloadCommandNoChannel verifies that /reload without an active channel yields an error status.
 func TestReloadCommandNoChannel(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
 	m = initModel(t, m)
 	// activeChannelID is "" by default (All Activity).
 
@@ -831,7 +831,7 @@ func TestReloadCommandActiveChannel(t *testing.T) {
 
 // TestMsgChannelHistoryUpdatesView verifies that MsgChannelHistory updates the messages view.
 func TestMsgChannelHistoryUpdatesView(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "")
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 

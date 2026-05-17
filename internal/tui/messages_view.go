@@ -26,6 +26,7 @@ type feedMessage struct {
 	post        mattermost.Message
 	senderName  string
 	channelName string
+	isDM        bool // true for DM/group channels — suppresses channel prefix in header
 }
 
 // feedItem is a union type for the feed: either a chat message or a system-generated line.
@@ -40,24 +41,34 @@ const bodyIndent = "  "
 // MessagesView holds the messages feed state and viewport.
 // All mutation methods use value receivers and return a new MessagesView.
 type MessagesView struct {
-	vp          viewport.Model
-	feedItems   []feedItem
-	selectedIdx int
-	lineOffsets []int
-	atBottom    bool
-	store       *store.Store
-	width       int // total width of this panel
-	height      int // total height (including header line)
-	ready       bool
+	vp             viewport.Model
+	feedItems      []feedItem
+	selectedIdx    int
+	lineOffsets    []int
+	atBottom       bool
+	store          *store.Store
+	width          int    // total width of this panel
+	height         int    // total height (including header line)
+	ready          bool
+	fullDateFormat string // Go time format for dates outside today (e.g. "02.01.2006")
 }
 
 // NewMessagesView creates a new MessagesView with the given store.
 func NewMessagesView(st *store.Store) MessagesView {
 	return MessagesView{
-		store:       st,
-		selectedIdx: -1,
-		atBottom:    true,
+		store:          st,
+		selectedIdx:    -1,
+		atBottom:       true,
+		fullDateFormat: "02.01.2006",
 	}
+}
+
+// SetFullDateFormat sets the date format used for messages not from today.
+func (mv MessagesView) SetFullDateFormat(format string) MessagesView {
+	if format != "" {
+		mv.fullDateFormat = format
+	}
+	return mv
 }
 
 // SetSize sets the width and height of the messages view and creates or resizes the viewport.
@@ -195,7 +206,7 @@ func (mv MessagesView) rerenderFeed() MessagesView {
 			if fm.post.RootID != "" && mv.store != nil {
 				snippet = mv.store.GetParentSnippet(fm.post.RootID)
 			}
-			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.width)
+			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM)
 			if idx == mv.selectedIdx {
 				rendered = highlightBlock(rendered, mv.width)
 			}
@@ -291,11 +302,36 @@ func highlightBlock(s string, width int) string {
 // Each message renders as 2–5 lines: a header line then up to 3 indented body
 // lines, plus an overflow indicator when the text exceeds 3 lines.
 // Thread replies include ↩ in the header and may show a parent snippet.
-func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet string, width int) string {
-	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
+// isDM suppresses the channel prefix for direct message channels.
+// fullDateFormat is the Go time layout used when the message is not from today.
+func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet, fullDateFormat string, width int, isDM bool) string {
+	msgTime := time.UnixMilli(msg.CreateAt)
+	now := time.Now()
+	var ts string
+	if msgTime.Year() == now.Year() && msgTime.YearDay() == now.YearDay() {
+		ts = msgTime.Format("15:04")
+	} else {
+		layout := fullDateFormat
+		if layout == "" {
+			layout = "02.01.2006"
+		}
+		ts = msgTime.Format(layout + " 15:04")
+	}
 
 	var headerLine string
-	if msg.RootID != "" {
+	if isDM {
+		// DM channels: no channel prefix, just sender
+		if msg.RootID != "" {
+			if snippet != "" {
+				snippet = strings.ReplaceAll(snippet, "\n", " ")
+				headerLine = fmt.Sprintf("[%s] ↩ @%s  (%s)", ts, senderName, snippet)
+			} else {
+				headerLine = fmt.Sprintf("[%s] ↩ @%s", ts, senderName)
+			}
+		} else {
+			headerLine = fmt.Sprintf("[%s] @%s", ts, senderName)
+		}
+	} else if msg.RootID != "" {
 		if snippet != "" {
 			snippet = strings.ReplaceAll(snippet, "\n", " ")
 			headerLine = fmt.Sprintf("[%s] #%s  ↩ @%s  (%s)", ts, channelName, senderName, snippet)
