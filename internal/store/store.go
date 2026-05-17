@@ -7,6 +7,7 @@ import (
 )
 
 const messageCap = 1000
+const channelMessageCap = 500
 
 // Message is a fully-resolved message ready for display and persistence.
 // It extends the raw API fields with sender_name and channel_name resolved at
@@ -24,16 +25,18 @@ type Message struct {
 
 // Store holds an in-memory message list (capped at 1000) backed by SQLite.
 type Store struct {
-	mu       sync.Mutex
-	db       *DB
-	messages []Message
+	mu              sync.Mutex
+	db              *DB
+	messages        []Message
+	channelMessages map[string][]Message // channelID → messages (oldest first, cap 500)
 }
 
 // NewStore creates a new Store backed by the given DB.
 func NewStore(db *DB) *Store {
 	return &Store{
-		db:       db,
-		messages: make([]Message, 0, messageCap),
+		db:              db,
+		messages:        make([]Message, 0, messageCap),
+		channelMessages: make(map[string][]Message),
 	}
 }
 
@@ -105,6 +108,54 @@ func (s *Store) LoadRecent(limit int) ([]Message, error) {
 	}
 	return msgs, nil
 }
+
+// AddChannelMessages adds messages to the per-channel cache.
+// prepend=true inserts older messages at the front (infinite scroll).
+// prepend=false appends newer messages at the back (initial load / WS events).
+// Cap per channel: 500 messages total. Also persists each message to the DB (best-effort).
+func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing := s.channelMessages[channelID]
+	var combined []Message
+	if prepend {
+		combined = append(msgs, existing...)
+	} else {
+		combined = append(existing, msgs...)
+	}
+	// Cap to channelMessageCap, keeping the appropriate end.
+	// When prepending (older msgs), keep the front (oldest); when appending, keep the tail (newest).
+	if len(combined) > channelMessageCap {
+		if prepend {
+			combined = combined[:channelMessageCap]
+		} else {
+			combined = combined[len(combined)-channelMessageCap:]
+		}
+	}
+	s.channelMessages[channelID] = combined
+
+	if s.db != nil {
+		for _, msg := range msgs {
+			_ = s.db.InsertMessage(msg)
+		}
+	}
+}
+
+// GetChannelMessages returns all messages for a channel in order (oldest first).
+func (s *Store) GetChannelMessages(channelID string) []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	msgs := s.channelMessages[channelID]
+	if len(msgs) == 0 {
+		return nil
+	}
+	result := make([]Message, len(msgs))
+	copy(result, msgs)
+	return result
+}
+
 
 func truncate(s string, max int) string {
 	runes := []rune(s)

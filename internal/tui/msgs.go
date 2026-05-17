@@ -60,3 +60,19 @@ type MsgDMNamesResolved struct {
 	// The @ prefix is added by the rendering layer (channelLabel).
 	Names map[string]string
 }
+
+// MsgChannelHistory carries the result of a channel history REST load.
+type MsgChannelHistory struct {
+	ChannelID string
+	Messages  []mattermost.Message
+	Prepend   bool
+	Err       error
+}
+
+// MsgChannelHistoryLoading signals that history is being fetched for a channel.
+type MsgChannelHistoryLoading struct {
+	ChannelID string
+}
+
+// MsgRequestReload is emitted by the /reload command to trigger a history reload.
+type MsgRequestReload struct{}

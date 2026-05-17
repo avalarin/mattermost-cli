@@ -260,6 +260,16 @@ func (mv MessagesView) AtBottom() bool {
 	return mv.atBottom
 }
 
+// AtTop returns true when the viewport Y offset is 0 (scrolled to the top).
+func (mv MessagesView) AtTop() bool {
+	return mv.vp.YOffset == 0
+}
+
+// IsEmpty returns true when there are no feed items.
+func (mv MessagesView) IsEmpty() bool {
+	return len(mv.feedItems) == 0
+}
+
 // VPYOffset returns the viewport Y offset (for tests).
 func (mv MessagesView) VPYOffset() int {
 	return mv.vp.YOffset

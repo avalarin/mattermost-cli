@@ -52,6 +52,16 @@ func (c *Client) get(path string, out interface{}) error {
 	return c.do(req, out)
 }
 
+// getQ performs a GET request with a query string appended to the path.
+func (c *Client) getQ(path, query string, out interface{}) error {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v4"+path+"?"+query, nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	return c.do(req, out)
+}
+
 func (c *Client) post(path string, body interface{}, out interface{}) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -184,6 +194,30 @@ func (c *Client) GetUserByUsername(username string) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// GetChannelPosts retrieves posts for a channel, returning them in chronological order (oldest first).
+// page and perPage control pagination; page=0 returns the most recent perPage posts.
+// The Mattermost v4 PostList response contains an "order" array (newest-first) and a "posts" map.
+func (c *Client) GetChannelPosts(channelID string, page, perPage int) ([]Message, error) {
+	type postList struct {
+		Posts map[string]Message `json:"posts"`
+		Order []string           `json:"order"`
+	}
+	var pl postList
+	query := fmt.Sprintf("page=%d&per_page=%d", page, perPage)
+	if err := c.getQ(fmt.Sprintf("/channels/%s/posts", channelID), query, &pl); err != nil {
+		return nil, err
+	}
+	// Walk Order in reverse (last element = oldest) to build chronological slice.
+	msgs := make([]Message, 0, len(pl.Order))
+	for i := len(pl.Order) - 1; i >= 0; i-- {
+		id := pl.Order[i]
+		if msg, ok := pl.Posts[id]; ok {
+			msgs = append(msgs, msg)
+		}
+	}
+	return msgs, nil
 }
 
 // SendMessage sends a message to a channel. Set rootID to post as a thread reply.
