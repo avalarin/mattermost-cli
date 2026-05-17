@@ -13,6 +13,7 @@ import (
 
 	"github.com/avalarin/mattermost-cli/internal/config"
 	"github.com/avalarin/mattermost-cli/internal/mattermost"
+	"github.com/avalarin/mattermost-cli/internal/store"
 	"github.com/avalarin/mattermost-cli/internal/tui"
 )
 
@@ -30,6 +31,14 @@ func resolveConfigPath(configFlag string) string {
 		return configFlag
 	}
 	return defaultConfigPath()
+}
+
+func defaultDBPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "mattermost-cli", "db.sqlite")
 }
 
 func main() {
@@ -52,6 +61,26 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	dbPath := defaultDBPath()
+	var st *store.Store
+	if dbPath != "" {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0700); err != nil {
+			slog.Warn("cannot create config directory", "err", err)
+		} else {
+			db, err := store.Open(dbPath)
+			if err != nil {
+				slog.Warn("failed to open database, running without persistence", "err", err)
+			} else {
+				defer func() {
+					if err := db.Close(); err != nil {
+						slog.Warn("failed to close database", "err", err)
+					}
+				}()
+				st = store.NewStore(db)
+			}
+		}
+	}
+
 	header, status, wsClient, channels := loadStartupState(resolvedConfig)
 	if wsClient != nil {
 		wsClient.Start(ctx)
@@ -64,7 +93,7 @@ func main() {
 		statusCh = wsClient.Status()
 	}
 
-	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels)
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -75,7 +104,6 @@ func main() {
 // loadStartupState loads config and authenticates with the Mattermost server.
 // On hard failures (invalid config fields, auth error) it prints to stderr and exits.
 // A missing config file is not a hard failure — the TUI can show a message instead.
-// Returns the WSClient and channel list; both are nil when no config is available.
 func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel) {
 	header := tui.HeaderInfo{Status: mattermost.ConnStatusConnecting}
 
@@ -109,7 +137,6 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 
 		channels, err = client.GetChannelsForTeam(team.ID)
 		if err != nil {
-			// Non-fatal: we can still show the feed without channel name resolution.
 			slog.Debug("failed to load channels", "err", err)
 		}
 	}

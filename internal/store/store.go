@@ -1,11 +1,148 @@
 package store
 
-// Store holds in-memory application state.
-type Store struct {
-	db *DB
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+const messageCap = 1000
+
+// Message is a fully-resolved message ready for display and persistence.
+// It extends the raw API fields with sender_name and channel_name resolved at
+// ingest time from the WebSocket event envelope.
+type Message struct {
+	ID          string
+	ChannelID   string
+	UserID      string
+	Text        string
+	CreateAt    int64
+	RootID      string
+	SenderName  string
+	ChannelName string
 }
 
-// NewStore creates a new in-memory store backed by the given DB.
+// Store holds an in-memory message list (capped at 1000) backed by SQLite.
+type Store struct {
+	mu            sync.Mutex
+	db            *DB
+	messages      []Message
+	renderedLines []string
+}
+
+// NewStore creates a new Store backed by the given DB.
 func NewStore(db *DB) *Store {
-	return &Store{db: db}
+	return &Store{
+		db:            db,
+		messages:      make([]Message, 0, messageCap),
+		renderedLines: make([]string, 0, messageCap),
+	}
+}
+
+// AddMessage stores the message (in memory and DB) and returns its rendered display line.
+func (s *Store) AddMessage(msg Message) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	snippet := s.getParentSnippetLocked(msg.RootID)
+	line := renderMessage(msg, snippet)
+
+	if len(s.messages) >= messageCap {
+		s.messages = s.messages[1:]
+		s.renderedLines = s.renderedLines[1:]
+	}
+	s.messages = append(s.messages, msg)
+	s.renderedLines = append(s.renderedLines, line)
+
+	if s.db != nil {
+		// Best-effort: DB write errors are not fatal for live display.
+		_ = s.db.InsertMessage(msg)
+	}
+
+	return line
+}
+
+// GetParentSnippet returns the first 40 runes of the parent message's text,
+// searching in-memory first then falling back to the database.
+func (s *Store) GetParentSnippet(rootID string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getParentSnippetLocked(rootID)
+}
+
+func (s *Store) getParentSnippetLocked(rootID string) string {
+	if rootID == "" {
+		return ""
+	}
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		if s.messages[i].ID == rootID {
+			return truncate(s.messages[i].Text, 40)
+		}
+	}
+	if s.db != nil {
+		if msg, err := s.db.GetMessageByID(rootID); err == nil && msg != nil {
+			return truncate(msg.Text, 40)
+		}
+	}
+	return ""
+}
+
+// GetLines returns a copy of all rendered display lines in order.
+func (s *Store) GetLines() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.renderedLines))
+	copy(out, s.renderedLines)
+	return out
+}
+
+// LoadRecent loads up to limit recent messages from the database into the in-memory
+// store and returns their rendered display lines. Intended for startup history load.
+func (s *Store) LoadRecent(limit int) ([]string, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	msgs, err := s.db.GetRecentMessages(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	lines := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		snippet := s.getParentSnippetLocked(msg.RootID)
+		line := renderMessage(msg, snippet)
+		if len(s.messages) >= messageCap {
+			s.messages = s.messages[1:]
+			s.renderedLines = s.renderedLines[1:]
+		}
+		s.messages = append(s.messages, msg)
+		s.renderedLines = append(s.renderedLines, line)
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) > max {
+		return string(runes[:max]) + "..."
+	}
+	return s
+}
+
+// renderMessage formats a single message for display.
+// Thread replies include an arrow prefix and, when available, a snippet of the parent.
+func renderMessage(msg Message, snippet string) string {
+	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
+
+	if msg.RootID != "" {
+		if snippet != "" {
+			return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s  ↩ В ответ на: %s", ts, msg.ChannelName, msg.SenderName, msg.Text, snippet)
+		}
+		return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
+	}
+	return fmt.Sprintf("[%s] #%-20s  %s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
 }

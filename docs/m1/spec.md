@@ -394,7 +394,7 @@ tui/model.go → Update() → View()
 
 ---
 
-### T7: SQLite + in-memory store (рефактор потока данных)
+### ✅ T7: SQLite + in-memory store (рефактор потока данных)
 
 **Контекст:** В T6 `feedLines` и `msgCache` живут прямо в `tui.Model`. T7 — полный рефактор: переносим их в `Store`, меняем поток WS→TUI на WS→Store→TUI, добавляем SQLite-персистентность.
 

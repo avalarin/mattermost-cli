@@ -1,16 +1,106 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+
+	_ "modernc.org/sqlite"
+)
 
 // DB wraps a SQLite database connection.
 type DB struct {
-	path string
+	db *sql.DB
 }
 
-// Open opens (or creates) the SQLite database at path.
+// Open opens (or creates) the SQLite database at path and initialises the schema.
+// path can be a file path or a SQLite URI (e.g. "file::memory:?cache=shared").
 func Open(path string) (*DB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("database path must not be empty")
 	}
-	return &DB{path: path}, nil
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite %q: %w", path, err)
+	}
+	if err := createSchema(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
+	}
+	return &DB{db: db}, nil
+}
+
+// Close releases the database connection.
+func (d *DB) Close() error {
+	return d.db.Close()
+}
+
+func createSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS channels (
+			id   TEXT PRIMARY KEY,
+			name TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS messages (
+			id           TEXT PRIMARY KEY,
+			channel_id   TEXT NOT NULL,
+			user_id      TEXT NOT NULL,
+			text         TEXT NOT NULL,
+			sender_name  TEXT NOT NULL,
+			channel_name TEXT NOT NULL,
+			root_id      TEXT NOT NULL DEFAULT '',
+			create_at    INTEGER NOT NULL
+		);
+	`)
+	return err
+}
+
+// InsertMessage inserts a message; duplicate IDs are silently ignored.
+func (d *DB) InsertMessage(msg Message) error {
+	_, err := d.db.Exec(`
+		INSERT INTO messages (id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING
+	`, msg.ID, msg.ChannelID, msg.UserID, msg.Text, msg.SenderName, msg.ChannelName, msg.RootID, msg.CreateAt)
+	return err
+}
+
+// GetRecentMessages returns up to limit messages ordered by create_at ascending (oldest first).
+func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
+	rows, err := d.db.Query(`
+		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at
+		FROM messages
+		ORDER BY create_at ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var msgs []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// GetMessageByID returns the message with the given ID, or nil if not found.
+func (d *DB) GetMessageByID(id string) (*Message, error) {
+	row := d.db.QueryRow(`
+		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at
+		FROM messages WHERE id = ?
+	`, id)
+	var m Message
+	err := row.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }

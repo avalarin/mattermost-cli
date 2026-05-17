@@ -3,11 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/avalarin/mattermost-cli/internal/mattermost"
 )
 
 func mustModel(t *testing.T, m tea.Model) Model {
@@ -168,86 +165,3 @@ func TestCtrlCClearsInput(t *testing.T) {
 	}
 }
 
-func TestFeedRenderReply(t *testing.T) {
-	now := time.Now()
-	createAt := now.UnixMilli()
-
-	msgCache := map[string]string{
-		"parent-id": "Hello everyone, how are you doing today?",
-	}
-
-	post := mattermost.Message{
-		ID:        "reply-id",
-		ChannelID: "ch1",
-		UserID:    "user1",
-		Text:      "I am fine, thanks!",
-		CreateAt:  createAt,
-		RootID:    "parent-id",
-	}
-
-	line := renderMessageLine(post, "alice", "general", msgCache)
-
-	if !strings.Contains(line, "↩") {
-		t.Errorf("expected thread reply indicator ↩ in line, got: %q", line)
-	}
-	if !strings.Contains(line, "alice") {
-		t.Errorf("expected sender name in line, got: %q", line)
-	}
-	if !strings.Contains(line, "I am fine, thanks!") {
-		t.Errorf("expected message text in line, got: %q", line)
-	}
-	if !strings.Contains(line, "Hello everyone") {
-		t.Errorf("expected parent snippet in line, got: %q", line)
-	}
-}
-
-func TestFeedRenderReplyNoParent(t *testing.T) {
-	createAt := time.Now().UnixMilli()
-	msgCache := map[string]string{}
-
-	post := mattermost.Message{
-		ID:       "reply-id",
-		RootID:   "unknown-parent",
-		Text:     "my reply",
-		CreateAt: createAt,
-	}
-
-	line := renderMessageLine(post, "bob", "general", msgCache)
-
-	if !strings.Contains(line, "↩") {
-		t.Errorf("expected ↩ indicator even without parent snippet, got: %q", line)
-	}
-	if !strings.Contains(line, "my reply") {
-		t.Errorf("expected message text in line, got: %q", line)
-	}
-	// No parent snippet when not in cache.
-	if strings.Contains(line, "В ответ на") {
-		t.Errorf("expected no parent snippet when parent not in cache, got: %q", line)
-	}
-}
-
-func TestFeedRenderNormalMessage(t *testing.T) {
-	createAt := time.Now().UnixMilli()
-	msgCache := map[string]string{}
-
-	post := mattermost.Message{
-		ID:       "msg-id",
-		Text:     "hello world",
-		CreateAt: createAt,
-	}
-
-	line := renderMessageLine(post, "charlie", "random", msgCache)
-
-	if strings.Contains(line, "↩") {
-		t.Errorf("expected no thread indicator for top-level message, got: %q", line)
-	}
-	if !strings.Contains(line, "charlie") {
-		t.Errorf("expected sender name in line, got: %q", line)
-	}
-	if !strings.Contains(line, "hello world") {
-		t.Errorf("expected message text in line, got: %q", line)
-	}
-	if !strings.Contains(line, "#random") {
-		t.Errorf("expected channel name in line, got: %q", line)
-	}
-}

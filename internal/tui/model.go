@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -12,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/avalarin/mattermost-cli/internal/mattermost"
+	"github.com/avalarin/mattermost-cli/internal/store"
 )
 
 // HeaderInfo holds the data displayed in the application header.
@@ -46,8 +46,7 @@ type Model struct {
 	events     <-chan mattermost.Event
 	connStatus <-chan mattermost.ConnStatus
 	channels   map[string]string // channelID -> channelName
-	msgCache   map[string]string // messageID -> text (for parent snippet)
-	feedLines  []string          // rendered message lines
+	store      *store.Store
 	atBottom   bool
 }
 
@@ -66,45 +65,48 @@ func NewModel() Model {
 }
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
-// and optional WebSocket channels and channel list.
+// WebSocket channels, channel list, and an optional store for persistence.
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
 	events <-chan mattermost.Event,
 	connStatus <-chan mattermost.ConnStatus,
 	channels []mattermost.Channel,
+	st *store.Store,
 ) Model {
 	m := NewModel()
 	m.header = header
 	m.statusMsg = status
 	m.events = events
 	m.connStatus = connStatus
+	m.store = st
 
-	// Build channelID -> channelName lookup map.
 	if len(channels) > 0 {
 		m.channels = make(map[string]string, len(channels))
 		for _, ch := range channels {
 			m.channels[ch.ID] = ch.Name
 		}
 	}
-	m.msgCache = make(map[string]string)
 
 	return m
 }
 
-// Init implements tea.Model. Starts waiting for the first WS event and status update.
+// Init implements tea.Model. Starts WS event/status loops and a one-shot history load.
 func (m Model) Init() tea.Cmd {
 	if m.events == nil {
 		return nil
 	}
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		waitForEvent(m.events),
 		waitForStatus(m.connStatus),
-	)
+	}
+	if m.store != nil {
+		cmds = append(cmds, loadHistory(m.store))
+	}
+	return tea.Batch(cmds...)
 }
 
 // waitForEvent blocks until an event arrives on ch and returns it as a tea.Msg.
-// Returns nil when the channel is closed (ends the subscription).
 func waitForEvent(ch <-chan mattermost.Event) tea.Cmd {
 	return func() tea.Msg {
 		evt, ok := <-ch
@@ -116,7 +118,6 @@ func waitForEvent(ch <-chan mattermost.Event) tea.Cmd {
 }
 
 // waitForStatus blocks until a status arrives on ch and returns it wrapped in MsgConnStatus.
-// Returns nil when the channel is closed (ends the subscription).
 func waitForStatus(ch <-chan mattermost.ConnStatus) tea.Cmd {
 	return func() tea.Msg {
 		s, ok := <-ch
@@ -124,6 +125,14 @@ func waitForStatus(ch <-chan mattermost.ConnStatus) tea.Cmd {
 			return nil
 		}
 		return MsgConnStatus{Status: s}
+	}
+}
+
+// loadHistory is a one-shot tea.Cmd that loads startup history from the store.
+func loadHistory(s *store.Store) tea.Cmd {
+	return func() tea.Msg {
+		lines, err := s.LoadRecent(100)
+		return MsgHistoryLoaded{Lines: lines, Err: err}
 	}
 }
 
@@ -146,6 +155,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MsgConnStatus:
 		m.header.Status = msg.Status
 		return m, waitForStatus(m.connStatus)
+
+	case MsgHistoryLoaded:
+		if msg.Err != nil {
+			m.statusMsg = "Failed to load history: " + msg.Err.Error()
+			return m, nil
+		}
+		if m.ready {
+			lines := m.store.GetLines()
+			if len(lines) > 0 {
+				m.viewport.SetContent(strings.Join(lines, "\n"))
+			}
+			if m.atBottom {
+				m.viewport.GotoBottom()
+			}
+		}
+		return m, nil
 	}
 
 	// Forward other messages to viewport when ready.
@@ -170,9 +195,12 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, feedHeight)
-		// Restore any messages that arrived before the first window size event.
-		if len(m.feedLines) > 0 {
-			m.viewport.SetContent(strings.Join(m.feedLines, "\n"))
+		if m.store != nil {
+			if lines := m.store.GetLines(); len(lines) > 0 {
+				m.viewport.SetContent(strings.Join(lines, "\n"))
+			} else {
+				m.viewport.SetContent("Waiting for messages...")
+			}
 		} else {
 			m.viewport.SetContent("Waiting for messages...")
 		}
@@ -206,7 +234,6 @@ func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEnd:
-		// Snap to bottom and re-enable auto-scroll.
 		if m.ready {
 			m.atBottom = true
 			m.viewport.GotoBottom()
@@ -218,18 +245,15 @@ func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = ModeCommand
 			m.input.Focus()
 			m.input.SetValue("/")
-			// Position cursor at end.
 			m.input.CursorEnd()
 			return m, nil
 		}
 	}
 
-	// In normal mode, forward scroll keys to viewport.
 	if m.ready {
 		prev := m.viewport.ScrollPercent()
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
-		// Any upward scroll disables auto-scroll.
 		if m.viewport.ScrollPercent() < prev {
 			m.atBottom = false
 		}
@@ -266,7 +290,6 @@ func (m Model) handleKeyCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Forward other key events to the text input.
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
 	return m, inputCmd
@@ -277,11 +300,10 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	if text == "/quit" {
 		return tea.Quit
 	}
-	// Unknown commands: show error in status bar (handled in future tasks).
 	return nil
 }
 
-// handlePostedEvent decodes a posted WS event and appends a rendered line to the feed.
+// handlePostedEvent decodes a posted WS event and updates the feed via the store.
 func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	postJSON, ok := evt.Data["post"].(string)
 	if !ok {
@@ -305,48 +327,29 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		channelName = name
 	}
 
-	// Cache the message text so thread replies can show a parent snippet.
-	if m.msgCache == nil {
-		m.msgCache = make(map[string]string)
+	if m.store == nil {
+		return m, nil
 	}
-	m.msgCache[post.ID] = post.Text
 
-	line := renderMessageLine(post, senderName, channelName, m.msgCache)
-	m.feedLines = append(m.feedLines, line)
+	m.store.AddMessage(store.Message{
+		ID:          post.ID,
+		ChannelID:   post.ChannelID,
+		UserID:      post.UserID,
+		Text:        post.Text,
+		CreateAt:    post.CreateAt,
+		RootID:      post.RootID,
+		SenderName:  senderName,
+		ChannelName: channelName,
+	})
 
-	content := strings.Join(m.feedLines, "\n")
-	m.viewport.SetContent(content)
-
-	if m.atBottom {
-		m.viewport.GotoBottom()
+	if m.ready {
+		m.viewport.SetContent(strings.Join(m.store.GetLines(), "\n"))
+		if m.atBottom {
+			m.viewport.GotoBottom()
+		}
 	}
 
 	return m, nil
-}
-
-// renderMessageLine formats a single message for display in the feed.
-// Thread replies include an arrow prefix and a snippet of the parent message.
-func renderMessageLine(msg mattermost.Message, senderName, channelName string, msgCache map[string]string) string {
-	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
-
-	if msg.RootID != "" {
-		// Thread reply — try to show a snippet of the parent message.
-		snippet := ""
-		if parent, ok := msgCache[msg.RootID]; ok {
-			runes := []rune(parent)
-			if len(runes) > 40 {
-				snippet = string(runes[:40]) + "..."
-			} else {
-				snippet = parent
-			}
-		}
-		if snippet != "" {
-			return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s  ↩ В ответ на: %s", ts, channelName, senderName, msg.Text, snippet)
-		}
-		return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s", ts, channelName, senderName, msg.Text)
-	}
-
-	return fmt.Sprintf("[%s] #%-20s  %s: %s", ts, channelName, senderName, msg.Text)
 }
 
 // StatusMsg returns the current status bar message (for testing).
