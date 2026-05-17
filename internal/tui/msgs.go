@@ -53,3 +53,10 @@ type MsgOpenHelp struct{}
 type MsgChannelSelected struct {
 	ChannelID string // empty string = All Activity
 }
+
+// MsgDMNamesResolved carries resolved display names for DM channels.
+type MsgDMNamesResolved struct {
+	// Names maps channel ID to the resolved username (e.g. "alice", without the @ sigil).
+	// The @ prefix is added by the rendering layer (channelLabel).
+	Names map[string]string
+}

@@ -9,6 +9,12 @@ model   = "claude-sonnet-4-6"
 enabled = false
 
 [ui]
-date_format   = "15:04"     # or "2006-01-02 15:04"
-message_limit = 100
-theme         = "auto"      # "auto" | "dark" | "light"
+date_format        = "15:04"  # or "2006-01-02 15:04"
+message_limit      = 100
+theme              = "auto"   # "auto" | "dark" | "light"
+channels_width     = 22
+show_mode_indicator = true
+
+[colors]
+active_header_bg = "237"      # background of the active panel header; ANSI 256-color or #RRGGBB
+active_header_fg = "15"       # foreground of the active panel header

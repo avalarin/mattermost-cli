@@ -14,6 +14,15 @@ type Config struct {
 	Server ServerConfig
 	AI     AIConfig
 	UI     UIConfig
+	Colors ColorsConfig
+}
+
+// ColorsConfig holds terminal color overrides (256-color ANSI codes or hex RGB).
+type ColorsConfig struct {
+	// ActiveHeaderBg is the background color of the active panel header. Default "237" (dark gray).
+	ActiveHeaderBg string `toml:"active_header_bg"`
+	// ActiveHeaderFg is the foreground color of the active panel header. Default "15" (bright white).
+	ActiveHeaderFg string `toml:"active_header_fg"`
 }
 
 type ServerConfig struct {
@@ -29,10 +38,11 @@ type AIConfig struct {
 }
 
 type UIConfig struct {
-	DateFormat    string `toml:"date_format"`
-	MessageLimit  int    `toml:"message_limit"`
-	Theme         string `toml:"theme"`
-	ChannelsWidth int    `toml:"channels_width"`
+	DateFormat        string `toml:"date_format"`
+	MessageLimit      int    `toml:"message_limit"`
+	Theme             string `toml:"theme"`
+	ChannelsWidth     int    `toml:"channels_width"`
+	ShowModeIndicator bool   `toml:"show_mode_indicator"`
 }
 
 func Load(path string) (*Config, error) {
@@ -59,6 +69,9 @@ func applyDefaults(cfg *Config) {
 	cfg.UI.MessageLimit = 100
 	cfg.UI.Theme = "auto"
 	cfg.UI.ChannelsWidth = 22
+	cfg.UI.ShowModeIndicator = true
+	cfg.Colors.ActiveHeaderBg = "237"
+	cfg.Colors.ActiveHeaderFg = "15"
 	cfg.AI.Model = "claude-sonnet-4-6"
 	cfg.AI.Enabled = false
 }
