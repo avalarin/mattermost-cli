@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,10 +28,17 @@ type HeaderInfo struct {
 type Mode int
 
 const (
-	// ModeNormal is the default navigation mode.
-	ModeNormal Mode = iota
-	// ModeCommand is the command input mode (activated by "/").
-	ModeCommand
+	// ModeInput is the default mode: textarea is focused for typing.
+	ModeInput Mode = iota
+	// ModeMessages is the message navigation mode: feed cursor is active.
+	ModeMessages
+	// ModeHelp is the help popup mode: scrollable keyboard shortcut reference.
+	ModeHelp
+)
+
+const (
+	minInputHeight = 1
+	maxInputHeight = 8
 )
 
 // feedMessage stores raw message data for re-rendering on resize.
@@ -57,42 +65,58 @@ type feedItem struct {
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width         int
-	height        int
-	mode          Mode
-	header        HeaderInfo
-	input         textinput.Model
-	viewport      viewport.Model
-	statusMsg     string
-	statusIsError bool
-	keys          KeyMap
-	styles        Styles
-	ready         bool
-	events        <-chan mattermost.Event
-	connStatus    <-chan mattermost.ConnStatus
-	channels      map[string]string // channelID -> channelName
-	store         *store.Store
-	feedItems     []feedItem
-	atBottom      bool
-	client        *mattermost.Client
-	teamID        string
-	registry      *Registry
-	statusGen     int // incremented on each MsgCommandResult to guard stale MsgClearStatus
+	width          int
+	height         int
+	mode           Mode
+	header         HeaderInfo
+	input          textarea.Model
+	viewport       viewport.Model
+	statusMsg      string
+	statusIsError  bool
+	keys           KeyMap
+	styles         Styles
+	ready          bool
+	events         <-chan mattermost.Event
+	connStatus     <-chan mattermost.ConnStatus
+	channels       map[string]string // channelID -> channelName
+	store          *store.Store
+	feedItems      []feedItem
+	atBottom       bool
+	client         *mattermost.Client
+	teamID         string
+	registry       *Registry
+	statusGen      int  // incremented on each MsgCommandResult to guard stale MsgClearStatus
+	selectedMsgIdx int  // index into feedItems; -1 = none selected
+	msgLineOffsets []int // starting line of each feedItem in viewport (built during rerenderFeed)
+	escPending     bool // true after first Esc press, waiting for second
+	escGen         int  // incremented on each Esc press to invalidate stale MsgEscTimeout
+	ctrlCPending   bool // true after first Ctrl+C press, waiting for second
+	ctrlCGen       int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
+	prevMode       Mode           // mode before help popup opened, restored on close
+	helpViewport   viewport.Model // scrollable popup content
+	helpReady      bool           // whether helpViewport has been initialized
 }
 
 // NewModel creates a new Model with default settings.
 func NewModel() Model {
-	ti := textinput.New()
-	ti.Placeholder = "Type / for commands..."
-	ti.Prompt = "❯ "
-	ti.CharLimit = 500
+	ta := textarea.New()
+	ta.Placeholder = "Type a message, or / for commands (Enter to send)..."
+	ta.ShowLineNumbers = false
+	ta.SetHeight(minInputHeight)
+	ta.CharLimit = 4000
+	// Remap InsertNewline from Enter to Alt+Enter (opt+enter for macOS) so Enter can be used to send.
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "opt+enter"))
+	// Remove the cursor-line background highlight.
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
 	return Model{
-		input:     ti,
-		keys:      DefaultKeyMap(),
-		styles:    DefaultStyles(),
-		atBottom:  true,
-		statusMsg: "Use /send #channel <text> to post · /send @user <text> for DMs · /quit to exit",
+		input:          ta,
+		keys:           DefaultKeyMap(),
+		styles:         DefaultStyles(),
+		atBottom:       true,
+		selectedMsgIdx: -1,
+		statusMsg:      "",
 	}
 }
 
@@ -206,10 +230,14 @@ func makeSendCmd(client *mattermost.Client, teamID string) func(map[string]strin
 }
 
 // makeHelpCmd returns the Execute function for the /help command.
+// With no args it opens the help popup; with a command name it shows detail in the feed.
 func makeHelpCmd(r *Registry) func(map[string]string) tea.Cmd {
 	return func(args map[string]string) tea.Cmd {
 		return func() tea.Msg {
-			return MsgSystemMessage{Text: r.HelpText(args["command"])}
+			if args["command"] != "" {
+				return MsgSystemMessage{Text: r.HelpText(args["command"])}
+			}
+			return MsgOpenHelp{}
 		}
 	}
 }
@@ -346,6 +374,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case MsgEscTimeout:
+		if msg.Gen == m.escGen && m.escPending {
+			m.escPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
+
+	case MsgCtrlCTimeout:
+		if msg.Gen == m.ctrlCGen && m.ctrlCPending {
+			m.ctrlCPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
+
+	case MsgOpenHelp:
+		return m.openHelp()
 	}
 
 	// Forward other messages to viewport when ready.
@@ -361,9 +408,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
+	m.input.SetWidth(m.width)
 
-	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(1) + divider(1)
-	feedHeight := m.height - 6
+	// Input height is dynamic (1–8 lines); recompute after width change (which may reflow lines).
+	inputH := m.input.LineCount()
+	if inputH < minInputHeight {
+		inputH = minInputHeight
+	}
+	if inputH > maxInputHeight {
+		inputH = maxInputHeight
+	}
+	m.input.SetHeight(inputH)
+
+	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(inputH) + divider(1)
+	feedHeight := m.height - 5 - inputH
 	if feedHeight < 0 {
 		feedHeight = 0
 	}
@@ -378,98 +436,323 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m = m.rerenderFeed()
 	}
 
+	if m.helpReady {
+		_, _, innerW, innerH := m.helpDimensions()
+		m.helpViewport.Width = innerW
+		m.helpViewport.Height = innerH
+		m.helpViewport.SetContent(buildHelpContent(m.keys, m.registry, innerW))
+	}
+
 	return m, nil
+}
+
+// syncInputHeight adjusts the textarea display height and the viewport height to match
+// the current textarea content (clamped to minInputHeight–maxInputHeight lines).
+// Must be called after any operation that may change the textarea content line count.
+func (m Model) syncInputHeight() Model {
+	lines := m.input.LineCount()
+	if lines < minInputHeight {
+		lines = minInputHeight
+	}
+	if lines > maxInputHeight {
+		lines = maxInputHeight
+	}
+	m.input.SetHeight(lines)
+	if m.ready && m.height > 0 {
+		feedHeight := m.height - 5 - lines
+		if feedHeight < 0 {
+			feedHeight = 0
+		}
+		m.viewport.Height = feedHeight
+	}
+	return m
+}
+
+// pageSize returns the number of messages to skip per PageUp/PageDown in ModeMessages.
+// Approximates how many messages fit on screen (viewport height / ~3 lines per message).
+func (m Model) pageSize() int {
+	n := m.viewport.Height / 3
+	if n < 1 {
+		n = 1
+	}
+	if n > 20 {
+		n = 20
+	}
+	return n
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// In ModeHelp, Ctrl+C closes the popup instead of triggering the exit mechanic.
+	if m.mode == ModeHelp && key.Matches(msg, m.keys.CtrlC) {
+		return m.closeHelp()
+	}
+	// Ctrl+C is handled globally before mode dispatch — guaranteed exit path.
+	if key.Matches(msg, m.keys.CtrlC) {
+		return m.handleCtrlC()
+	}
 	switch m.mode {
-	case ModeNormal:
-		return m.handleKeyNormal(msg)
-	case ModeCommand:
-		return m.handleKeyCommand(msg)
+	case ModeInput:
+		return m.handleKeyInput(msg)
+	case ModeMessages:
+		return m.handleKeyMessages(msg)
+	case ModeHelp:
+		return m.handleKeyHelp(msg)
 	}
 	return m, nil
 }
 
-func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		if m.input.Value() != "" {
-			m.input.SetValue("")
-			return m, nil
-		}
-		m.statusMsg = "To exit, use /quit"
-		m.statusIsError = false
-		return m, nil
+// handleCtrlC implements the double-Ctrl+C exit mechanic.
+// First press: show hint and start 3s window.
+// Second press within 3s: quit.
+func (m Model) handleCtrlC() (tea.Model, tea.Cmd) {
+	if m.ctrlCPending {
+		return m, tea.Quit
+	}
+	m.ctrlCPending = true
+	m.ctrlCGen++
+	gen := m.ctrlCGen
+	// Invalidate any pending clearStatusAfter so the hint isn't wiped by a stale timer.
+	m.statusGen++
+	m.statusMsg = "Press Ctrl+C again to exit"
+	m.statusIsError = false
+	return m, func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		return MsgCtrlCTimeout{Gen: gen}
+	}
+}
 
-	case tea.KeyEnd:
+func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Send): // enter → send/execute
+		return m.executeCommand(m.input.Value())
+
+	case key.Matches(msg, m.keys.Cancel): // esc
+		return m.handleEsc()
+
+	case key.Matches(msg, m.keys.FocusMessages): // ctrl+j → focus messages
+		m.mode = ModeMessages
+		m = m.selectLastMessage()
 		if m.ready {
-			m.atBottom = true
-			m.viewport.GotoBottom()
+			m = m.rerenderFeed()
 		}
 		return m, nil
 
-	case tea.KeyRunes:
-		if string(msg.Runes) == "/" {
-			m.mode = ModeCommand
-			m.input.Focus()
-			m.input.SetValue("/")
-			m.input.CursorEnd()
+	case key.Matches(msg, m.keys.Up): // up from empty input → go to messages
+		if m.input.Value() == "" {
+			m.mode = ModeMessages
+			m = m.selectLastMessage()
+			if m.ready {
+				m = m.rerenderFeed()
+			}
 			return m, nil
 		}
+		// non-empty input: fall through to textarea
 	}
 
+	// All other keys (including alt+enter which inserts a newline via textarea.KeyMap.InsertNewline).
+	var inputCmd tea.Cmd
+	m.input, inputCmd = m.input.Update(msg)
+	m = m.syncInputHeight()
+	return m, inputCmd
+}
+
+func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Cancel): // esc → back to input; counts as first double-esc press
+		m.mode = ModeInput
+		m.input.Focus() //nolint:errcheck
+		// Count this Esc as the first press of the double-esc mechanic so that
+		// one more Esc in ModeInput clears the input and deselects the message.
+		if !m.escPending {
+			m.escPending = true
+			m.escGen++
+			gen := m.escGen
+			m.statusMsg = "Press Esc again to clear input and deselect"
+			m.statusIsError = false
+			return m, func() tea.Msg {
+				time.Sleep(3 * time.Second)
+				return MsgEscTimeout{Gen: gen}
+			}
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → back to input
+		m.mode = ModeInput
+		m.input.Focus() //nolint:errcheck
+		return m, nil
+
+	case key.Matches(msg, m.keys.Up):
+		m = m.moveCursorUp()
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		m = m.moveCursorDown()
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.End):
+		m.atBottom = true
+		m.viewport.GotoBottom()
+		m = m.selectLastMessage()
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageUp):
+		m.atBottom = false
+		n := m.pageSize()
+		for i := 0; i < n; i++ {
+			m = m.moveCursorUp()
+		}
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageDown):
+		n := m.pageSize()
+		for i := 0; i < n; i++ {
+			m = m.moveCursorDown()
+		}
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
+	}
+
+	// Typing "/" from messages: insert into input and go to input mode.
+	// The selected message remains highlighted.
+	if msg.Type == tea.KeyRunes && string(msg.Runes) == "/" {
+		m.mode = ModeInput
+		m.input.Focus() //nolint:errcheck
+		if m.input.Value() == "" {
+			m.input.SetValue("/")
+		}
+		return m, nil
+	}
+
+	// Forward unknown keys to viewport.
 	if m.ready {
-		prev := m.viewport.ScrollPercent()
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
-		if m.viewport.ScrollPercent() < prev {
-			m.atBottom = false
-		}
 		return m, cmd
 	}
 
 	return m, nil
 }
 
-func (m Model) handleKeyCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc:
-		m.mode = ModeNormal
-		m.input.Blur()
-		m.input.SetValue("")
-		return m, nil
-
-	case tea.KeyCtrlC:
-		if m.input.Value() != "" {
-			m.input.SetValue("")
-			m.input.Blur()
-			m.mode = ModeNormal
-			return m, nil
-		}
-		m.statusMsg = "To exit, use /quit"
+// handleEsc implements the double-esc mechanic.
+// First press: show a hint in the status bar and schedule a timeout.
+// Second press (within 3s): clear input and deselect message.
+func (m Model) handleEsc() (tea.Model, tea.Cmd) {
+	if m.escPending {
+		// Second esc: clear input, deselect, and scroll to bottom.
+		m.input.Reset()
+		m = m.syncInputHeight()
+		m.selectedMsgIdx = -1
+		m.escPending = false
+		m.escGen++
+		m.statusMsg = ""
 		m.statusIsError = false
-		m.mode = ModeNormal
+		if m.ready {
+			m = m.rerenderFeed()
+			m.atBottom = true
+			m.viewport.GotoBottom()
+		}
 		return m, nil
-
-	case tea.KeyEnter:
-		return m.executeCommand(m.input.Value())
 	}
+	// First esc: show hint and schedule timeout.
+	m.escPending = true
+	m.escGen++
+	gen := m.escGen
+	m.statusMsg = "Press Esc again to clear input and deselect"
+	m.statusIsError = false
+	return m, func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		return MsgEscTimeout{Gen: gen}
+	}
+}
 
-	var inputCmd tea.Cmd
-	m.input, inputCmd = m.input.Update(msg)
-	return m, inputCmd
+// selectLastMessage selects the last feedItemKindMessage in feedItems.
+func (m Model) selectLastMessage() Model {
+	for i := len(m.feedItems) - 1; i >= 0; i-- {
+		if m.feedItems[i].kind == feedItemKindMessage {
+			m.selectedMsgIdx = i
+			m = m.scrollToSelected()
+			return m
+		}
+	}
+	m.selectedMsgIdx = -1
+	return m
+}
+
+// moveCursorUp moves selection to the previous message.
+func (m Model) moveCursorUp() Model {
+	for i := m.selectedMsgIdx - 1; i >= 0; i-- {
+		if m.feedItems[i].kind == feedItemKindMessage {
+			m.selectedMsgIdx = i
+			m.atBottom = false
+			return m.scrollToSelected()
+		}
+	}
+	return m // already at top
+}
+
+// moveCursorDown moves selection to the next message.
+func (m Model) moveCursorDown() Model {
+	for i := m.selectedMsgIdx + 1; i < len(m.feedItems); i++ {
+		if m.feedItems[i].kind == feedItemKindMessage {
+			m.selectedMsgIdx = i
+			// If this is the last selectable message, scroll to bottom.
+			if !m.hasSelectableMessageAfter(i) {
+				m.atBottom = true
+				m.viewport.GotoBottom()
+			}
+			return m.scrollToSelected()
+		}
+	}
+	return m // already at bottom
+}
+
+// hasSelectableMessageAfter returns true if there is a feedItemKindMessage after index i.
+func (m Model) hasSelectableMessageAfter(i int) bool {
+	for j := i + 1; j < len(m.feedItems); j++ {
+		if m.feedItems[j].kind == feedItemKindMessage {
+			return true
+		}
+	}
+	return false
+}
+
+// scrollToSelected scrolls the viewport to show the selected message.
+func (m Model) scrollToSelected() Model {
+	if !m.ready {
+		return m
+	}
+	if m.selectedMsgIdx < 0 || m.selectedMsgIdx >= len(m.msgLineOffsets) {
+		return m
+	}
+	lineOffset := m.msgLineOffsets[m.selectedMsgIdx]
+	m.viewport.SetYOffset(lineOffset)
+	return m
 }
 
 func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
-	// Always reset input/mode first.
-	m.input.SetValue("")
-	m.input.Blur()
-	m.mode = ModeNormal
+	text := strings.TrimSpace(input)
+
+	// Reset textarea and go to input mode.
+	m.input.Reset()
+	m = m.syncInputHeight()
+	m.mode = ModeInput
 
 	if m.registry == nil {
 		// Fallback for models without a registry (e.g., tests that use NewModel()).
-		text := strings.TrimSpace(input)
 		if text == "/quit" {
 			return m, tea.Quit
 		}
@@ -480,6 +763,11 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Unknown command: %s", name)
 		m.statusIsError = true
+		m.statusGen++
+		return m, clearStatusAfter(5*time.Second, m.statusGen)
+	}
+
+	if text == "" {
 		return m, nil
 	}
 
@@ -497,9 +785,13 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 			m.statusMsg = err.Error()
 		}
 		m.statusIsError = true
-		return m, nil
+		m.statusGen++
+		return m, clearStatusAfter(5*time.Second, m.statusGen)
 	}
 
+	// Valid command: clear any stale error immediately so the status bar is fresh.
+	m.statusMsg = ""
+	m.statusIsError = false
 	return m, result.Def.Execute(result.Args)
 }
 
@@ -560,14 +852,23 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 }
 
 // rerenderFeed rebuilds the viewport content from stored feed items at the current width.
-// Message items re-wrap on resize; system items are inserted verbatim.
+// It also builds msgLineOffsets for cursor navigation and applies selection highlight.
 func (m Model) rerenderFeed() Model {
 	if len(m.feedItems) == 0 {
-		m.viewport.SetContent("Waiting for messages...")
+		if m.ready {
+			m.viewport.SetContent("Waiting for messages...")
+		}
+		m.msgLineOffsets = nil
 		return m
 	}
+
 	parts := make([]string, 0, len(m.feedItems))
-	for _, item := range m.feedItems {
+	offsets := make([]int, len(m.feedItems))
+	lineCount := 0
+
+	for idx, item := range m.feedItems {
+		offsets[idx] = lineCount
+		var rendered string
 		switch item.kind {
 		case feedItemKindMessage:
 			fm := item.msg
@@ -575,13 +876,35 @@ func (m Model) rerenderFeed() Model {
 			if fm.post.RootID != "" && m.store != nil {
 				snippet = m.store.GetParentSnippet(fm.post.RootID)
 			}
-			parts = append(parts, renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width))
+			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width)
+			// Apply selection highlight when this message is selected.
+			if idx == m.selectedMsgIdx {
+				rendered = highlightBlock(rendered, m.width)
+			}
 		case feedItemKindSystem:
-			parts = append(parts, item.system)
+			rendered = item.system
 		}
+		parts = append(parts, rendered)
+		lineCount += strings.Count(rendered, "\n") + 1
 	}
-	m.viewport.SetContent(strings.Join(parts, "\n"))
+
+	m.msgLineOffsets = offsets
+	if m.ready {
+		m.viewport.SetContent(strings.Join(parts, "\n"))
+	}
 	return m
+}
+
+// highlightBlock applies a dark-gray background to all lines of a multi-line string.
+func highlightBlock(s string, width int) string {
+	style := lipgloss.NewStyle().
+		Background(lipgloss.Color("237")).
+		Width(width)
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = style.Render(l)
+	}
+	return strings.Join(lines, "\n")
 }
 
 const bodyIndent = "  "
@@ -684,6 +1007,10 @@ func (m Model) View() string {
 		return "Initializing..."
 	}
 
+	if m.mode == ModeHelp {
+		return m.renderHelp()
+	}
+
 	// strings.Join is used instead of lipgloss.JoinVertical to avoid implicit
 	// width normalization that can interact badly with pre-styled strings.
 	return strings.Join([]string{
@@ -737,18 +1064,92 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	msg := m.statusMsg
 	if msg == "" {
-		msg = "Use /send #channel <text> to post · /send @user <text> for DMs · /quit to exit"
+		if m.selectedMsgIdx >= 0 && m.selectedMsgIdx < len(m.feedItems) {
+			item := m.feedItems[m.selectedMsgIdx]
+			if item.kind == feedItemKindMessage {
+				msgID := item.msg.post.ID
+				if len(msgID) > 8 {
+					msgID = msgID[:8] + "..."
+				}
+				msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
+			}
+		} else {
+			msg = "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
+		}
 	}
-	color := lipgloss.Color("241") // default: gray
+	color := lipgloss.Color("241")
 	if m.statusIsError {
-		color = lipgloss.Color("203") // light red
+		color = lipgloss.Color("203")
 	}
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Foreground(color).
-		Render(msg)
+	return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
 }
 
 func (m Model) renderInput() string {
 	return m.input.View()
+}
+
+// helpDimensions computes the outer and inner dimensions of the help popup.
+func (m Model) helpDimensions() (outerW, outerH, innerW, innerH int) {
+	outerW = m.width - 4
+	if outerW > 84 {
+		outerW = 84
+	}
+	if outerW < 44 {
+		outerW = 44
+	}
+	outerH = m.height - 4
+	if outerH < 10 {
+		outerH = 10
+	}
+	innerW = outerW - 2
+	innerH = outerH - 2
+	return
+}
+
+func (m Model) openHelp() (tea.Model, tea.Cmd) {
+	m.prevMode = m.mode
+	m.mode = ModeHelp
+	_, _, innerW, innerH := m.helpDimensions()
+	if !m.helpReady {
+		m.helpViewport = viewport.New(innerW, innerH)
+		m.helpReady = true
+	} else {
+		m.helpViewport.Width = innerW
+		m.helpViewport.Height = innerH
+	}
+	m.helpViewport.SetContent(buildHelpContent(m.keys, m.registry, innerW))
+	m.helpViewport.GotoTop()
+	return m, nil
+}
+
+func (m Model) closeHelp() (tea.Model, tea.Cmd) {
+	m.mode = m.prevMode
+	return m, nil
+}
+
+func (m Model) handleKeyHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Cancel) {
+		return m.closeHelp()
+	}
+	var cmd tea.Cmd
+	m.helpViewport, cmd = m.helpViewport.Update(msg)
+	return m, cmd
+}
+
+func (m Model) renderHelp() string {
+	_, _, innerW, innerH := m.helpDimensions()
+
+	content := "Loading..."
+	if m.helpReady {
+		content = m.helpViewport.View()
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Width(innerW).
+		Height(innerH).
+		Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }

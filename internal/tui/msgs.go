@@ -39,3 +39,12 @@ type MsgHistoryLoaded struct {
 type MsgSystemMessage struct {
 	Text string
 }
+
+// MsgEscTimeout signals that the double-esc window has expired.
+type MsgEscTimeout struct{ Gen int }
+
+// MsgCtrlCTimeout signals that the double-ctrl+c window has expired.
+type MsgCtrlCTimeout struct{ Gen int }
+
+// MsgOpenHelp signals that the help popup should be opened.
+type MsgOpenHelp struct{}
