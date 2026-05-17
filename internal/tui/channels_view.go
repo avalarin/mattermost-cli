@@ -275,7 +275,7 @@ func truncateLabel(label string, maxWidth int) string {
 func (cv ChannelsView) View() string {
 	var sb strings.Builder
 
-	// Header line: accent when active (keyboard focus), plain bold otherwise.
+	// Header line: active panel uses configured accent color; inactive is dimmed.
 	var headerStyle lipgloss.Style
 	if cv.active {
 		color := cv.activeHeaderColor
@@ -287,7 +287,7 @@ func (cv ChannelsView) View() string {
 			Width(cv.width).
 			Foreground(lipgloss.Color(color))
 	} else {
-		headerStyle = lipgloss.NewStyle().Bold(true).Width(cv.width)
+		headerStyle = lipgloss.NewStyle().Bold(true).Width(cv.width).Foreground(lipgloss.Color("241"))
 	}
 	sb.WriteString(headerStyle.Render("Channels"))
 

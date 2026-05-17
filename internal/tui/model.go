@@ -949,12 +949,16 @@ func (m Model) renderMessagesHeader() string {
 	}
 	var headerStyle lipgloss.Style
 	if m.mode == ModeMessages {
+		color := m.activeHeaderColor
+		if color == "" {
+			color = "15"
+		}
 		headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Width(msgsW).
-			Foreground(lipgloss.Color(m.activeHeaderColor))
+			Foreground(lipgloss.Color(color))
 	} else {
-		headerStyle = lipgloss.NewStyle().Bold(true).Width(msgsW)
+		headerStyle = lipgloss.NewStyle().Bold(true).Width(msgsW).Foreground(lipgloss.Color("241"))
 	}
 	return headerStyle.Render(name)
 }
