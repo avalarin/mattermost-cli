@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/avalarin/mattermost-cli/internal/mattermost"
@@ -91,6 +92,41 @@ func TestSendMessage_OK(t *testing.T) {
 	}
 	if msg.ID != "post123" {
 		t.Errorf("msg.ID = %q, want %q", msg.ID, "post123")
+	}
+}
+
+func TestGetUserByUsername_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/users/username/alice" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]string{"id": "user456", "username": "alice"})
+	}))
+
+	user, err := client.GetUserByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetUserByUsername() error: %v", err)
+	}
+	if user.ID != "user456" {
+		t.Errorf("user.ID = %q, want %q", user.ID, "user456")
+	}
+	if user.Username != "alice" {
+		t.Errorf("user.Username = %q, want %q", user.Username, "alice")
+	}
+}
+
+func TestGetUserByUsername_NotFound(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+
+	_, err := client.GetUserByUsername("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "user not found") {
+		t.Errorf("expected 'user not found' in error, got: %v", err)
 	}
 }
 
