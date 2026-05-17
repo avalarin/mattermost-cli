@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -236,6 +239,92 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 	}
 	if !strings.Contains(line, "#random") {
 		t.Errorf("expected channel name in line, got: %q", line)
+	}
+}
+
+// testModelWithClient builds a Model wired to the given client and initializes the viewport.
+func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
+	t.Helper()
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	return mustModel(t, updated)
+}
+
+// writeTestJSON is a helper to write a JSON response in tests.
+func writeTestJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v) //nolint:errcheck
+}
+
+func TestExecuteSendChannelNotFound(t *testing.T) {
+	// httptest server that always 404s (simulates channel not found).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	client := mattermost.NewClient(srv.URL, "test-token")
+	m := testModelWithClient(t, client, "team1")
+
+	// Directly call executeCommand to get the async cmd.
+	_, asyncCmd := m.executeCommand("/send #nonexistent hello")
+	if asyncCmd == nil {
+		t.Fatal("expected async cmd from executeCommand, got nil")
+	}
+
+	result := asyncCmd()
+	cr, ok := result.(MsgCommandResult)
+	if !ok {
+		t.Fatalf("expected MsgCommandResult, got %T", result)
+	}
+	if cr.Err == nil {
+		t.Fatal("expected error for channel not found, got nil")
+	}
+	if !strings.Contains(cr.Err.Error(), "channel not found") {
+		t.Errorf("expected 'channel not found' in error, got: %v", cr.Err)
+	}
+}
+
+func TestExecuteSendDMSuccess(t *testing.T) {
+	// httptest server that handles user lookup, DM creation, and message send.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/users/me":
+			writeTestJSON(w, map[string]string{"id": "me123", "username": "myuser"})
+		case "/api/v4/users/username/bob":
+			writeTestJSON(w, map[string]string{"id": "bob456", "username": "bob"})
+		case "/api/v4/channels/direct":
+			writeTestJSON(w, map[string]string{"id": "dm-chan-id", "name": "dm-chan"})
+		case "/api/v4/posts":
+			writeTestJSON(w, map[string]interface{}{"id": "post789", "channel_id": "dm-chan-id", "message": "hello"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client := mattermost.NewClient(srv.URL, "test-token")
+	// Pre-warm currentUserID by calling GetCurrentUser.
+	if _, err := client.GetCurrentUser(); err != nil {
+		t.Fatalf("GetCurrentUser() setup error: %v", err)
+	}
+	m := testModelWithClient(t, client, "team1")
+
+	_, asyncCmd := m.executeCommand("/send @bob hello there")
+	if asyncCmd == nil {
+		t.Fatal("expected async cmd from executeCommand, got nil")
+	}
+
+	result := asyncCmd()
+	cr, ok := result.(MsgCommandResult)
+	if !ok {
+		t.Fatalf("expected MsgCommandResult, got %T", result)
+	}
+	if cr.Err != nil {
+		t.Fatalf("expected success, got error: %v", cr.Err)
+	}
+	if cr.Info != "Sent ✓" {
+		t.Errorf("Info = %q, want %q", cr.Info, "Sent ✓")
 	}
 }
 

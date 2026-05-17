@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,21 @@ type feedMessage struct {
 	channelName string
 }
 
+// feedItemKind distinguishes the two kinds of item that can appear in the feed.
+type feedItemKind int
+
+const (
+	feedItemKindMessage feedItemKind = iota
+	feedItemKindSystem
+)
+
+// feedItem is a union type for the feed: either a chat message or a system-generated line.
+type feedItem struct {
+	kind   feedItemKind
+	msg    feedMessage // valid when kind == feedItemKindMessage
+	system string      // valid when kind == feedItemKindSystem (pre-formatted text)
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
 	width         int
@@ -56,8 +72,12 @@ type Model struct {
 	connStatus    <-chan mattermost.ConnStatus
 	channels      map[string]string // channelID -> channelName
 	store         *store.Store
-	feedMessages  []feedMessage
+	feedItems     []feedItem
 	atBottom      bool
+	client        *mattermost.Client
+	teamID        string
+	registry      *Registry
+	statusGen     int // incremented on each MsgCommandResult to guard stale MsgClearStatus
 }
 
 // NewModel creates a new Model with default settings.
@@ -77,7 +97,7 @@ func NewModel() Model {
 }
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
-// WebSocket channels, channel list, and an optional store for persistence.
+// WebSocket channels, channel list, store, REST client, and team ID.
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -85,6 +105,8 @@ func NewModelWithHeader(
 	connStatus <-chan mattermost.ConnStatus,
 	channels []mattermost.Channel,
 	st *store.Store,
+	client *mattermost.Client,
+	teamID string,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -95,6 +117,8 @@ func NewModelWithHeader(
 	m.events = events
 	m.connStatus = connStatus
 	m.store = st
+	m.client = client
+	m.teamID = teamID
 
 	if len(channels) > 0 {
 		m.channels = make(map[string]string, len(channels))
@@ -103,7 +127,100 @@ func NewModelWithHeader(
 		}
 	}
 
+	m.registry = buildRegistry(client, teamID)
+
 	return m
+}
+
+// buildRegistry constructs the command registry with all built-in commands.
+func buildRegistry(client *mattermost.Client, teamID string) *Registry {
+	r := NewRegistry()
+
+	r.Register(&CommandDef{
+		Name:        "quit",
+		Description: "Exit the application",
+		Execute:     func(_ map[string]string) tea.Cmd { return tea.Quit },
+	})
+
+	r.Register(&CommandDef{
+		Name:        "send",
+		Description: "Send a message to a channel or user",
+		Args: []ArgSpec{
+			{Name: "target", Description: "#channel or @username", Required: true},
+			{Name: "text", Description: "message text", Required: true, Greedy: true},
+		},
+		Execute: makeSendCmd(client, teamID),
+	})
+
+	r.Register(&CommandDef{
+		Name:        "help",
+		Description: "Show available commands",
+		Args: []ArgSpec{
+			{Name: "command", Description: "command name (optional)", Required: false},
+		},
+		Execute: makeHelpCmd(r),
+	})
+
+	return r
+}
+
+// makeSendCmd returns the Execute function for the /send command.
+func makeSendCmd(client *mattermost.Client, teamID string) func(map[string]string) tea.Cmd {
+	return func(args map[string]string) tea.Cmd {
+		return func() tea.Msg {
+			if client == nil {
+				return MsgCommandResult{Err: errors.New("not connected")}
+			}
+			target, text := args["target"], args["text"]
+			var channelID string
+			switch {
+			case strings.HasPrefix(target, "#"):
+				ch, err := client.GetChannelByName(teamID, strings.TrimPrefix(target, "#"))
+				if errors.Is(err, mattermost.ErrChannelNotFound) {
+					return MsgCommandResult{Err: fmt.Errorf("channel not found: %s", strings.TrimPrefix(target, "#"))}
+				}
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				channelID = ch.ID
+			case strings.HasPrefix(target, "@"):
+				username := strings.TrimPrefix(target, "@")
+				user, err := client.GetUserByUsername(username)
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				ch, err := client.FindOrCreateDM(teamID, user.ID)
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				channelID = ch.ID
+			default:
+				return MsgCommandResult{Err: errors.New("target must start with # (channel) or @ (user)")}
+			}
+			if _, err := client.SendMessage(channelID, text, ""); err != nil {
+				return MsgCommandResult{Err: err}
+			}
+			return MsgCommandResult{Info: "Sent ✓"}
+		}
+	}
+}
+
+// makeHelpCmd returns the Execute function for the /help command.
+func makeHelpCmd(r *Registry) func(map[string]string) tea.Cmd {
+	return func(args map[string]string) tea.Cmd {
+		return func() tea.Msg {
+			return MsgSystemMessage{Text: r.HelpText(args["command"])}
+		}
+	}
+}
+
+// clearStatusAfter returns a tea.Cmd that sends MsgClearStatus{Gen: gen} after d.
+// The generation token prevents a stale timer from clearing a newer command's status.
+func clearStatusAfter(d time.Duration, gen int) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(d)
+		return MsgClearStatus{Gen: gen}
+	}
 }
 
 // Init implements tea.Model. Starts WS event/status loops and a one-shot history load.
@@ -178,19 +295,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		for _, sm := range msg.Messages {
-			m.feedMessages = append(m.feedMessages, feedMessage{
-				post: mattermost.Message{
-					ID:        sm.ID,
-					ChannelID: sm.ChannelID,
-					UserID:    sm.UserID,
-					Text:      sm.Text,
-					CreateAt:  sm.CreateAt,
-					RootID:    sm.RootID,
+			m.feedItems = append(m.feedItems, feedItem{
+				kind: feedItemKindMessage,
+				msg: feedMessage{
+					post: mattermost.Message{
+						ID:        sm.ID,
+						ChannelID: sm.ChannelID,
+						UserID:    sm.UserID,
+						Text:      sm.Text,
+						CreateAt:  sm.CreateAt,
+						RootID:    sm.RootID,
+					},
+					senderName:  sm.SenderName,
+					channelName: sm.ChannelName,
 				},
-				senderName:  sm.SenderName,
-				channelName: sm.ChannelName,
 			})
 		}
+		if m.ready {
+			m = m.rerenderFeed()
+			if m.atBottom {
+				m.viewport.GotoBottom()
+			}
+		}
+		return m, nil
+
+	case MsgCommandResult:
+		m.statusGen++
+		if msg.Err != nil {
+			m.statusMsg = msg.Err.Error()
+			m.statusIsError = true
+		} else {
+			m.statusMsg = msg.Info
+			m.statusIsError = false
+		}
+		return m, clearStatusAfter(2*time.Second, m.statusGen)
+
+	case MsgClearStatus:
+		if msg.Gen == m.statusGen {
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
+
+	case MsgSystemMessage:
+		m.feedItems = append(m.feedItems, feedItem{kind: feedItemKindSystem, system: msg.Text})
 		if m.ready {
 			m = m.rerenderFeed()
 			if m.atBottom {
@@ -314,17 +462,45 @@ func (m Model) handleKeyCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
-	text := strings.TrimSpace(input)
-	if text == "/quit" {
-		return m, tea.Quit
-	}
-	// Unknown command — show error in status bar.
-	m.statusMsg = fmt.Sprintf("Unknown command: %s", text)
-	m.statusIsError = true
+	// Always reset input/mode first.
 	m.input.SetValue("")
 	m.input.Blur()
 	m.mode = ModeNormal
-	return m, nil
+
+	if m.registry == nil {
+		// Fallback for models without a registry (e.g., tests that use NewModel()).
+		text := strings.TrimSpace(input)
+		if text == "/quit" {
+			return m, tea.Quit
+		}
+		parts := strings.Fields(text)
+		name := ""
+		if len(parts) > 0 {
+			name = strings.TrimPrefix(parts[0], "/")
+		}
+		m.statusMsg = fmt.Sprintf("Unknown command: %s", name)
+		m.statusIsError = true
+		return m, nil
+	}
+
+	result, err := m.registry.Parse(input)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrUnknownCommand):
+			parts := strings.Fields(strings.TrimSpace(input))
+			name := ""
+			if len(parts) > 0 {
+				name = strings.TrimPrefix(parts[0], "/")
+			}
+			m.statusMsg = fmt.Sprintf("Unknown command: %s", name)
+		default:
+			m.statusMsg = err.Error()
+		}
+		m.statusIsError = true
+		return m, nil
+	}
+
+	return m, result.Def.Execute(result.Args)
 }
 
 // handlePostedEvent decodes a posted WS event, persists it via the store,
@@ -365,10 +541,13 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		})
 	}
 
-	m.feedMessages = append(m.feedMessages, feedMessage{
-		post:        post,
-		senderName:  senderName,
-		channelName: channelName,
+	m.feedItems = append(m.feedItems, feedItem{
+		kind: feedItemKindMessage,
+		msg: feedMessage{
+			post:        post,
+			senderName:  senderName,
+			channelName: channelName,
+		},
 	})
 
 	m = m.rerenderFeed()
@@ -380,20 +559,26 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// rerenderFeed rebuilds the viewport content from stored messages at the current width.
-// Parent snippets are looked up from the store; messages re-wrap on resize.
+// rerenderFeed rebuilds the viewport content from stored feed items at the current width.
+// Message items re-wrap on resize; system items are inserted verbatim.
 func (m Model) rerenderFeed() Model {
-	if len(m.feedMessages) == 0 {
+	if len(m.feedItems) == 0 {
 		m.viewport.SetContent("Waiting for messages...")
 		return m
 	}
-	parts := make([]string, 0, len(m.feedMessages))
-	for _, fm := range m.feedMessages {
-		snippet := ""
-		if fm.post.RootID != "" && m.store != nil {
-			snippet = m.store.GetParentSnippet(fm.post.RootID)
+	parts := make([]string, 0, len(m.feedItems))
+	for _, item := range m.feedItems {
+		switch item.kind {
+		case feedItemKindMessage:
+			fm := item.msg
+			snippet := ""
+			if fm.post.RootID != "" && m.store != nil {
+				snippet = m.store.GetParentSnippet(fm.post.RootID)
+			}
+			parts = append(parts, renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width))
+		case feedItemKindSystem:
+			parts = append(parts, item.system)
 		}
-		parts = append(parts, renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width))
 	}
 	m.viewport.SetContent(strings.Join(parts, "\n"))
 	return m

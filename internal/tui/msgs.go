@@ -17,7 +17,9 @@ type MsgCommandResult struct {
 }
 
 // MsgClearStatus signals that the status bar should be cleared.
-type MsgClearStatus struct{}
+// Gen must match the model's current statusGen to prevent a stale timer
+// from wiping a more recent command result.
+type MsgClearStatus struct{ Gen int }
 
 // MsgNewMessage carries an individual message (used for startup history delivery).
 type MsgNewMessage struct {
@@ -31,4 +33,9 @@ type MsgNewMessage struct {
 type MsgHistoryLoaded struct {
 	Messages []store.Message
 	Err      error
+}
+
+// MsgSystemMessage is a system-generated text block appended to the feed (e.g., /help output).
+type MsgSystemMessage struct {
+	Text string
 }

@@ -81,7 +81,7 @@ func main() {
 		}
 	}
 
-	header, status, wsClient, channels := loadStartupState(resolvedConfig)
+	header, status, wsClient, channels, restClient, teamID := loadStartupState(resolvedConfig)
 	if wsClient != nil {
 		wsClient.Start(ctx)
 	}
@@ -93,7 +93,7 @@ func main() {
 		statusCh = wsClient.Status()
 	}
 
-	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st)
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -104,11 +104,12 @@ func main() {
 // loadStartupState loads config and authenticates with the Mattermost server.
 // On hard failures (invalid config fields, auth error) it prints to stderr and exits.
 // A missing config file is not a hard failure — the TUI can show a message instead.
-func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel) {
+// Returns the header info, status message, WS client, channels, REST client, and team ID.
+func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel, *mattermost.Client, string) {
 	header := tui.HeaderInfo{Status: mattermost.ConnStatusConnecting}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil
+		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil, nil, ""
 	}
 
 	cfg, err := config.Load(path)
@@ -127,6 +128,7 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 	header.Username = user.Username
 
 	var channels []mattermost.Channel
+	teamID := ""
 	if cfg.Server.Team != "" {
 		team, err := client.GetTeamByName(cfg.Server.Team)
 		if err != nil {
@@ -134,6 +136,7 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 			os.Exit(1)
 		}
 		header.TeamName = team.Name
+		teamID = team.ID
 
 		channels, err = client.GetChannelsForTeam(team.ID)
 		if err != nil {
@@ -142,5 +145,5 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 	}
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
-	return header, "", wsClient, channels
+	return header, "", wsClient, channels, client, teamID
 }

@@ -459,7 +459,7 @@ type MsgNewMessage struct {
 
 ---
 
-### T8: Команда `/send` + DM
+### ✅ T8: Команда `/send` + DM
 
 **Что делаем:**
 - `parseCommand(input string) (Command, error)`:

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -151,6 +152,19 @@ func (c *Client) FindOrCreateDM(teamID, targetUserID string) (*Channel, error) {
 		return nil, err
 	}
 	return &ch, nil
+}
+
+// GetUserByUsername retrieves a user by their username.
+func (c *Client) GetUserByUsername(username string) (*User, error) {
+	var u User
+	err := c.get("/users/username/"+url.PathEscape(username), &u)
+	if errors.Is(err, errNotFound) {
+		return nil, fmt.Errorf("user not found: %s", username)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
 }
 
 // SendMessage sends a message to a channel. Set rootID to post as a thread reply.
