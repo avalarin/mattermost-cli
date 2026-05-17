@@ -235,13 +235,12 @@ func (mv MessagesView) hasSelectableAfter(i int) bool {
 	return false
 }
 
-// SelectedItem returns a pointer to the currently selected feed item, or nil.
-func (mv MessagesView) SelectedItem() *feedItem {
+// SelectedItem returns a copy of the currently selected feed item and true, or zero value and false.
+func (mv MessagesView) SelectedItem() (feedItem, bool) {
 	if mv.selectedIdx < 0 || mv.selectedIdx >= len(mv.feedItems) {
-		return nil
+		return feedItem{}, false
 	}
-	item := mv.feedItems[mv.selectedIdx]
-	return &item
+	return mv.feedItems[mv.selectedIdx], true
 }
 
 // UpdateVP forwards a tea.Msg to the underlying viewport.
@@ -329,7 +328,7 @@ func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet 
 }
 
 // wrapText splits text into lines of at most width runes, breaking on word boundaries.
-// It also preserves existing newlines in the source text.
+// Newlines in the source split into separate paragraphs; blank lines (whitespace-only) are dropped.
 func wrapText(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}

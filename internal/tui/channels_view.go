@@ -177,6 +177,23 @@ func (cv ChannelsView) IsSelectedArchived() bool {
 	return item.channel.DeleteAt > 0
 }
 
+// DisplayNameByID returns the display label for the given channel ID.
+// Returns "All Activity" for the empty string sentinel and for unknown IDs.
+func (cv ChannelsView) DisplayNameByID(channelID string) string {
+	if channelID == allActivityID {
+		return "All Activity"
+	}
+	for _, item := range cv.items {
+		if !item.isAll && item.channel.ID == channelID {
+			if item.channel.DisplayName != "" {
+				return "#" + item.channel.DisplayName
+			}
+			return "#" + item.channel.Name
+		}
+	}
+	return "All Activity"
+}
+
 // SelectedDisplayName returns the display name of the selected channel
 // ("All Activity" for the aggregate filter).
 func (cv ChannelsView) SelectedDisplayName() string {

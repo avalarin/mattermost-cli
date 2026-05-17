@@ -76,6 +76,7 @@ type Model struct {
 	channelsView    ChannelsView
 	activeChannelID string // "" = All Activity
 	channelsWidth   int    // from config, default 22
+	feedH           int    // cached body height, updated in handleWindowSize/syncInputHeight
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -415,6 +416,7 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	if feedH < 0 {
 		feedH = 0
 	}
+	m.feedH = feedH
 
 	chW := m.channelsWidth
 	msgsW := m.width - chW - 1 // 1 for vertical divider
@@ -446,6 +448,7 @@ func (m Model) syncInputHeight() Model {
 		if feedH < 0 {
 			feedH = 0
 		}
+		m.feedH = feedH
 		chW := m.channelsWidth
 		msgsW := m.width - chW - 1
 		if msgsW < 1 {
@@ -837,13 +840,7 @@ func (m Model) renderBody() string {
 
 	divChar := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
 
-	inputH := clamp(m.input.LineCount(), minInputHeight, maxInputHeight)
-	feedH := m.height - 5 - inputH
-	if feedH < 0 {
-		feedH = 0
-	}
-
-	bodyLines := make([]string, feedH)
+	bodyLines := make([]string, m.feedH)
 	for i := range bodyLines {
 		cl := ""
 		if i < len(chLines) {
@@ -860,18 +857,7 @@ func (m Model) renderBody() string {
 
 // renderMessagesHeader renders the header line for the messages panel.
 func (m Model) renderMessagesHeader() string {
-	name := "All Activity"
-	if m.activeChannelID != "" {
-		for _, item := range m.channelsView.items {
-			if !item.isAll && item.channel.ID == m.activeChannelID {
-				name = "#" + item.channel.Name
-				if item.channel.DisplayName != "" {
-					name = "#" + item.channel.DisplayName
-				}
-				break
-			}
-		}
-	}
+	name := m.channelsView.DisplayNameByID(m.activeChannelID)
 	msgsW := m.width - m.channelsWidth - 1
 	if msgsW < 1 {
 		msgsW = 1
@@ -919,7 +905,7 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	msg := m.statusMsg
 	if msg == "" {
-		if item := m.messagesView.SelectedItem(); item != nil && item.kind == feedItemKindMessage {
+		if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
 			msgID := item.msg.post.ID
 			if len(msgID) > 8 {
 				msgID = msgID[:8] + "..."

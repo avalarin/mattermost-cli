@@ -118,7 +118,7 @@ func TestFocusMessages(t *testing.T) {
 	m = mustModel(t, updated)
 
 	if m.mode != ModeMessages {
-		t.Errorf("expected ModeMessages after ctrl+m, got %v", m.mode)
+		t.Errorf("expected ModeMessages after ctrl+j, got %v", m.mode)
 	}
 	if m.messagesView.selectedIdx < 0 {
 		t.Errorf("expected selectedIdx >= 0 after entering ModeMessages, got %d", m.messagesView.selectedIdx)
