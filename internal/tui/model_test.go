@@ -146,7 +146,7 @@ func TestPrefixActivated(t *testing.T) {
 
 // TestPrefixUpGoesToMessages: Ctrl+B then ↑ switches to ModeMessages from any mode.
 func TestPrefixUpGoesToMessages(t *testing.T) {
-	for _, startMode := range []Mode{ModeInput, ModeChannels} {
+	for _, startMode := range []Mode{ModeInput, ModeChannels, ModeMessages} {
 		m := NewModel()
 		m = initModel(t, m)
 		m.mode = startMode
@@ -216,21 +216,68 @@ func TestPrefixRightGoesToMessages(t *testing.T) {
 
 // TestPrefixCancelledByNonArrow: Ctrl+B then a non-arrow key cancels prefix mode.
 func TestPrefixCancelledByNonArrow(t *testing.T) {
-	m := NewModel()
-	m = initModel(t, m)
+	for _, startMode := range []Mode{ModeInput, ModeMessages, ModeChannels} {
+		m := NewModel()
+		m = initModel(t, m)
+		m.mode = startMode
+
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+		if !m.prefixPending {
+			t.Fatalf("startMode=%v: expected prefixPending=true after Ctrl+B", startMode)
+		}
+		// Press a letter — prefix should be cancelled, mode unchanged.
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+
+		if m.prefixPending {
+			t.Errorf("startMode=%v: expected prefixPending=false after non-arrow key", startMode)
+		}
+		if m.mode != startMode {
+			t.Errorf("startMode=%v: expected mode to remain %v after cancel, got %v", startMode, startMode, m.mode)
+		}
+	}
+}
+
+// TestPrefixTimeoutClearsPending: MsgPrefixTimeout with matching gen clears prefix state.
+func TestPrefixTimeoutClearsPending(t *testing.T) {
+	m := initModel(t, NewModel())
 
 	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
 	if !m.prefixPending {
 		t.Fatal("expected prefixPending=true after Ctrl+B")
 	}
-	// Press a letter — prefix should be cancelled.
-	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	gen := m.prefixGen
+
+	updated, _ := m.Update(MsgPrefixTimeout{Gen: gen})
+	m = mustModel(t, updated)
 
 	if m.prefixPending {
-		t.Error("expected prefixPending=false after non-arrow key")
+		t.Error("expected prefixPending=false after MsgPrefixTimeout")
 	}
-	if m.mode != ModeInput {
-		t.Errorf("expected mode to remain ModeInput, got %v", m.mode)
+	if m.statusMsg != "" {
+		t.Errorf("expected empty statusMsg after timeout, got %q", m.statusMsg)
+	}
+}
+
+// TestStalePrefixTimeoutIgnored: MsgPrefixTimeout with stale gen does not clear prefix state.
+func TestStalePrefixTimeoutIgnored(t *testing.T) {
+	m := initModel(t, NewModel())
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	gen := m.prefixGen
+
+	// Send stale timeout — should be ignored.
+	updated, _ := m.Update(MsgPrefixTimeout{Gen: gen - 1})
+	m = mustModel(t, updated)
+
+	if !m.prefixPending {
+		t.Error("stale MsgPrefixTimeout should not clear prefixPending")
+	}
+
+	// Correct gen clears it.
+	updated, _ = m.Update(MsgPrefixTimeout{Gen: gen})
+	m = mustModel(t, updated)
+	if m.prefixPending {
+		t.Error("expected prefixPending=false after correct-gen MsgPrefixTimeout")
 	}
 }
 
