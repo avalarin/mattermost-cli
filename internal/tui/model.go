@@ -106,7 +106,7 @@ func NewModel() Model {
 	// Remove the cursor-line background highlight.
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	// Use a vertical bar as the prompt so it acts as a left focus indicator.
-	ta.Prompt = "│ "
+	ta.Prompt = "❯ "
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
