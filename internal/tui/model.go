@@ -32,6 +32,8 @@ const (
 	ModeInput Mode = iota
 	// ModeMessages is the message navigation mode: feed cursor is active.
 	ModeMessages
+	// ModeHelp is the help popup mode: scrollable keyboard shortcut reference.
+	ModeHelp
 )
 
 const (
@@ -90,6 +92,9 @@ type Model struct {
 	escGen         int  // incremented on each Esc press to invalidate stale MsgEscTimeout
 	ctrlCPending   bool // true after first Ctrl+C press, waiting for second
 	ctrlCGen       int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
+	prevMode       Mode           // mode before help popup opened, restored on close
+	helpViewport   viewport.Model // scrollable popup content
+	helpReady      bool           // whether helpViewport has been initialized
 }
 
 // NewModel creates a new Model with default settings.
@@ -225,10 +230,14 @@ func makeSendCmd(client *mattermost.Client, teamID string) func(map[string]strin
 }
 
 // makeHelpCmd returns the Execute function for the /help command.
+// With no args it opens the help popup; with a command name it shows detail in the feed.
 func makeHelpCmd(r *Registry) func(map[string]string) tea.Cmd {
 	return func(args map[string]string) tea.Cmd {
 		return func() tea.Msg {
-			return MsgSystemMessage{Text: r.HelpText(args["command"])}
+			if args["command"] != "" {
+				return MsgSystemMessage{Text: r.HelpText(args["command"])}
+			}
+			return MsgOpenHelp{}
 		}
 	}
 }
@@ -381,6 +390,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = false
 		}
 		return m, nil
+
+	case MsgOpenHelp:
+		return m.openHelp()
 	}
 
 	// Forward other messages to viewport when ready.
@@ -424,6 +436,13 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m = m.rerenderFeed()
 	}
 
+	if m.helpReady {
+		_, _, innerW, innerH := m.helpDimensions()
+		m.helpViewport.Width = innerW
+		m.helpViewport.Height = innerH
+		m.helpViewport.SetContent(buildHelpContent(m.keys, m.registry, innerW))
+	}
+
 	return m, nil
 }
 
@@ -463,6 +482,10 @@ func (m Model) pageSize() int {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// In ModeHelp, Ctrl+C closes the popup instead of triggering the exit mechanic.
+	if m.mode == ModeHelp && key.Matches(msg, m.keys.CtrlC) {
+		return m.closeHelp()
+	}
 	// Ctrl+C is handled globally before mode dispatch — guaranteed exit path.
 	if key.Matches(msg, m.keys.CtrlC) {
 		return m.handleCtrlC()
@@ -472,6 +495,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyInput(msg)
 	case ModeMessages:
 		return m.handleKeyMessages(msg)
+	case ModeHelp:
+		return m.handleKeyHelp(msg)
 	}
 	return m, nil
 }
@@ -982,6 +1007,10 @@ func (m Model) View() string {
 		return "Initializing..."
 	}
 
+	if m.mode == ModeHelp {
+		return m.renderHelp()
+	}
+
 	// strings.Join is used instead of lipgloss.JoinVertical to avoid implicit
 	// width normalization that can interact badly with pre-styled strings.
 	return strings.Join([]string{
@@ -1057,4 +1086,70 @@ func (m Model) renderStatusBar() string {
 
 func (m Model) renderInput() string {
 	return m.input.View()
+}
+
+// helpDimensions computes the outer and inner dimensions of the help popup.
+func (m Model) helpDimensions() (outerW, outerH, innerW, innerH int) {
+	outerW = m.width - 4
+	if outerW > 84 {
+		outerW = 84
+	}
+	if outerW < 44 {
+		outerW = 44
+	}
+	outerH = m.height - 4
+	if outerH < 10 {
+		outerH = 10
+	}
+	innerW = outerW - 2
+	innerH = outerH - 2
+	return
+}
+
+func (m Model) openHelp() (tea.Model, tea.Cmd) {
+	m.prevMode = m.mode
+	m.mode = ModeHelp
+	_, _, innerW, innerH := m.helpDimensions()
+	if !m.helpReady {
+		m.helpViewport = viewport.New(innerW, innerH)
+		m.helpReady = true
+	} else {
+		m.helpViewport.Width = innerW
+		m.helpViewport.Height = innerH
+	}
+	m.helpViewport.SetContent(buildHelpContent(m.keys, m.registry, innerW))
+	m.helpViewport.GotoTop()
+	return m, nil
+}
+
+func (m Model) closeHelp() (tea.Model, tea.Cmd) {
+	m.mode = m.prevMode
+	return m, nil
+}
+
+func (m Model) handleKeyHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, m.keys.Cancel) {
+		return m.closeHelp()
+	}
+	var cmd tea.Cmd
+	m.helpViewport, cmd = m.helpViewport.Update(msg)
+	return m, cmd
+}
+
+func (m Model) renderHelp() string {
+	_, _, innerW, innerH := m.helpDimensions()
+
+	content := "Loading..."
+	if m.helpReady {
+		content = m.helpViewport.View()
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Width(innerW).
+		Height(innerH).
+		Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }

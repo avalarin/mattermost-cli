@@ -633,6 +633,79 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 	}
 }
 
+// TestHelpPopupOpens: /help with no args opens ModeHelp.
+func TestHelpPopupOpens(t *testing.T) {
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "")
+	m = initModel(t, m)
+
+	// Type "/help" and press Enter.
+	for _, r := range "/help" {
+		r := r
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, asyncCmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if asyncCmd == nil {
+		t.Fatal("expected async cmd from /help, got nil")
+	}
+
+	// Run the cmd to get MsgOpenHelp.
+	msg := asyncCmd()
+	if _, ok := msg.(MsgOpenHelp); !ok {
+		t.Fatalf("expected MsgOpenHelp, got %T", msg)
+	}
+
+	// Feed MsgOpenHelp into the model.
+	updated, _ := m.Update(msg)
+	m = mustModel(t, updated)
+
+	if m.mode != ModeHelp {
+		t.Errorf("expected ModeHelp after MsgOpenHelp, got %v", m.mode)
+	}
+}
+
+// TestHelpPopupClosesWithEsc: Esc in ModeHelp returns to previous mode.
+func TestHelpPopupClosesWithEsc(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Open help popup directly.
+	updated, _ := m.Update(MsgOpenHelp{})
+	m = mustModel(t, updated)
+	if m.mode != ModeHelp {
+		t.Fatalf("expected ModeHelp, got %v", m.mode)
+	}
+
+	// Press Esc to close.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after Esc in ModeHelp, got %v", m.mode)
+	}
+}
+
+// TestHelpPopupClosesWithCtrlC: Ctrl+C in ModeHelp closes the popup (not the double-Ctrl+C exit).
+func TestHelpPopupClosesWithCtrlC(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Open help popup.
+	updated, _ := m.Update(MsgOpenHelp{})
+	m = mustModel(t, updated)
+	if m.mode != ModeHelp {
+		t.Fatalf("expected ModeHelp, got %v", m.mode)
+	}
+
+	// Press Ctrl+C — should close popup, not trigger exit mechanic.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after Ctrl+C in ModeHelp, got %v", m.mode)
+	}
+	if m.ctrlCPending {
+		t.Error("expected ctrlCPending=false after Ctrl+C closes help popup")
+	}
+}
+
 // buildPostedEvent creates a fake mattermost.Event of type "posted" for testing.
 func buildPostedEvent(msgID, channelName, channelID, senderName, text string) mattermost.Event {
 	post := mattermost.Message{
