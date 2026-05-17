@@ -97,8 +97,8 @@ func NewModel() Model {
 	ta.ShowLineNumbers = false
 	ta.SetHeight(minInputHeight)
 	ta.CharLimit = 4000
-	// Remap InsertNewline from Enter to Alt+Enter so Enter can be used to send.
-	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter"))
+	// Remap InsertNewline from Enter to Alt+Enter (opt+enter for macOS) so Enter can be used to send.
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "opt+enter"))
 	// Remove the cursor-line background highlight.
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
@@ -716,7 +716,8 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = fmt.Sprintf("Unknown command: %s", name)
 		m.statusIsError = true
-		return m, nil
+		m.statusGen++
+		return m, clearStatusAfter(5*time.Second, m.statusGen)
 	}
 
 	if text == "" {
@@ -737,9 +738,13 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 			m.statusMsg = err.Error()
 		}
 		m.statusIsError = true
-		return m, nil
+		m.statusGen++
+		return m, clearStatusAfter(5*time.Second, m.statusGen)
 	}
 
+	// Valid command: clear any stale error immediately so the status bar is fresh.
+	m.statusMsg = ""
+	m.statusIsError = false
 	return m, result.Def.Execute(result.Args)
 }
 
@@ -1018,7 +1023,7 @@ func (m Model) renderStatusBar() string {
 				msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
 			}
 		} else {
-			msg = "Enter to send · Alt+Enter for newline · /send #channel · /quit to exit"
+			msg = "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
 		}
 	}
 	color := lipgloss.Color("241")
