@@ -42,3 +42,6 @@ type MsgSystemMessage struct {
 
 // MsgEscTimeout signals that the double-esc window has expired.
 type MsgEscTimeout struct{ Gen int }
+
+// MsgCtrlCTimeout signals that the double-ctrl+c window has expired.
+type MsgCtrlCTimeout struct{ Gen int }

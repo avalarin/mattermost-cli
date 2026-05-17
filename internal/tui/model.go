@@ -88,6 +88,8 @@ type Model struct {
 	msgLineOffsets []int // starting line of each feedItem in viewport (built during rerenderFeed)
 	escPending     bool // true after first Esc press, waiting for second
 	escGen         int  // incremented on each Esc press to invalidate stale MsgEscTimeout
+	ctrlCPending   bool // true after first Ctrl+C press, waiting for second
+	ctrlCGen       int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
 }
 
 // NewModel creates a new Model with default settings.
@@ -371,6 +373,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = false
 		}
 		return m, nil
+
+	case MsgCtrlCTimeout:
+		if msg.Gen == m.ctrlCGen && m.ctrlCPending {
+			m.ctrlCPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
 	}
 
 	// Forward other messages to viewport when ready.
@@ -453,6 +463,10 @@ func (m Model) pageSize() int {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Ctrl+C is handled globally before mode dispatch — guaranteed exit path.
+	if key.Matches(msg, m.keys.CtrlC) {
+		return m.handleCtrlC()
+	}
 	switch m.mode {
 	case ModeInput:
 		return m.handleKeyInput(msg)
@@ -462,22 +476,30 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleCtrlC implements the double-Ctrl+C exit mechanic.
+// First press: show hint and start 3s window.
+// Second press within 3s: quit.
+func (m Model) handleCtrlC() (tea.Model, tea.Cmd) {
+	if m.ctrlCPending {
+		return m, tea.Quit
+	}
+	m.ctrlCPending = true
+	m.ctrlCGen++
+	gen := m.ctrlCGen
+	// Invalidate any pending clearStatusAfter so the hint isn't wiped by a stale timer.
+	m.statusGen++
+	m.statusMsg = "Press Ctrl+C again to exit"
+	m.statusIsError = false
+	return m, func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		return MsgCtrlCTimeout{Gen: gen}
+	}
+}
+
 func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Send): // enter → send/execute
 		return m.executeCommand(m.input.Value())
-
-	case key.Matches(msg, m.keys.CtrlC): // ctrl+c → clear input + deselect
-		m.input.Reset()
-		m = m.syncInputHeight()
-		m.selectedMsgIdx = -1
-		m.escPending = false
-		m.statusMsg = ""
-		m.statusIsError = false
-		if m.ready {
-			m = m.rerenderFeed()
-		}
-		return m, nil
 
 	case key.Matches(msg, m.keys.Cancel): // esc
 		return m.handleEsc()

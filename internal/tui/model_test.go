@@ -60,46 +60,40 @@ func TestQuitCommandExits(t *testing.T) {
 	}
 }
 
-func TestCtrlCEmptyFieldShowsHint(t *testing.T) {
+// TestCtrlCShowsExitHint: first Ctrl+C shows "press again to exit" hint.
+func TestCtrlCShowsExitHint(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
 
-	// Ctrl+C with empty input in ModeInput clears and deselects (no error hint).
 	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
 
-	// statusIsError should not be set.
-	if m.statusIsError {
-		t.Errorf("expected no error after Ctrl+C with empty input, got statusIsError=true, msg=%q", m.StatusMsg())
+	if !strings.Contains(m.StatusMsg(), "Ctrl+C") {
+		t.Errorf("expected Ctrl+C hint in status bar, got: %q", m.StatusMsg())
 	}
-	// Input should still be empty.
-	if m.input.Value() != "" {
-		t.Errorf("expected empty input after Ctrl+C, got %q", m.input.Value())
+	if m.statusIsError {
+		t.Errorf("expected no error flag on Ctrl+C hint, got statusIsError=true")
+	}
+	if !m.ctrlCPending {
+		t.Error("expected ctrlCPending=true after first Ctrl+C")
 	}
 }
 
-// TestCtrlCClearsInput: Ctrl+C in ModeInput clears textarea and deselects message.
-func TestCtrlCClearsInput(t *testing.T) {
+// TestDoubleCtrlCExits: second Ctrl+C within window produces tea.QuitMsg.
+func TestDoubleCtrlCExits(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
 
-	// Type some text.
-	for _, r := range "send" {
-		r := r
-		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-	}
-
-	if m.input.Value() == "" {
-		t.Fatal("expected non-empty input after typing")
-	}
-
-	// Ctrl+C should clear input.
+	// First Ctrl+C.
 	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
 
-	if m.mode != ModeInput {
-		t.Errorf("expected ModeInput after Ctrl+C, got %v", m.mode)
+	// Second Ctrl+C should produce tea.Quit.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected quit cmd after second Ctrl+C, got nil")
 	}
-	if m.input.Value() != "" {
-		t.Errorf("expected empty input after Ctrl+C, got %q", m.input.Value())
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("expected tea.QuitMsg after double Ctrl+C, got %T", msg)
 	}
 }
 
@@ -624,20 +618,18 @@ func TestStaleEscTimeoutIgnored(t *testing.T) {
 	}
 }
 
-func TestCtrlCClearsAndDeselects(t *testing.T) {
+// TestCtrlCWorksInModeMessages: Ctrl+C shows exit hint even in ModeMessages.
+func TestCtrlCWorksInModeMessages(t *testing.T) {
 	m := initModel(t, NewModel())
+	m.mode = ModeMessages
 
-	// Go to ModeMessages (sets selectedMsgIdx if there are messages — but feed is empty).
-	// Manually set selectedMsgIdx to simulate a selection.
-	m.selectedMsgIdx = 0
-
-	// ctrl+c from ModeInput → clear + deselect.
 	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlC})
-	if m.selectedMsgIdx != -1 {
-		t.Errorf("expected selectedMsgIdx=-1 after ctrl+c, got %d", m.selectedMsgIdx)
+
+	if !m.ctrlCPending {
+		t.Error("expected ctrlCPending=true after Ctrl+C in ModeMessages")
 	}
-	if m.input.Value() != "" {
-		t.Errorf("expected empty input after ctrl+c, got %q", m.input.Value())
+	if !strings.Contains(m.StatusMsg(), "Ctrl+C") {
+		t.Errorf("expected exit hint in ModeMessages, got: %q", m.StatusMsg())
 	}
 }
 
