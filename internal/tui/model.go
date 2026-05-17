@@ -67,6 +67,8 @@ type Model struct {
 	escGen        int  // incremented on each Esc press to invalidate stale MsgEscTimeout
 	ctrlCPending  bool // true after first Ctrl+C press, waiting for second
 	ctrlCGen      int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
+	prefixPending bool // true after Ctrl+B press, waiting for arrow key
+	prefixGen     int  // incremented on each Ctrl+B press to invalidate stale MsgPrefixTimeout
 	prevMode      Mode           // mode before help popup opened, restored on close
 	helpViewport  viewport.Model // scrollable popup content
 	helpReady     bool           // whether helpViewport has been initialized
@@ -532,6 +534,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case MsgPrefixTimeout:
+		if msg.Gen == m.prefixGen && m.prefixPending {
+			m.prefixPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
+
 	case MsgOpenHelp:
 		return m.openHelp()
 
@@ -725,6 +735,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.CtrlC) {
 		return m.handleCtrlC()
 	}
+
+	// Prefix mode: Ctrl+B was pressed, waiting for an arrow key.
+	// Not active in ModeHelp to keep the help popup unaffected.
+	if m.mode != ModeHelp {
+		if m.prefixPending {
+			m.prefixPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+			switch {
+			case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Right):
+				m.mode = ModeMessages
+				m.input.Blur()
+				m.messagesView = m.messagesView.SelectLast()
+				if m.ready {
+					m.messagesView = m.messagesView.rerenderFeed()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.Down):
+				m.mode = ModeInput
+				m.input.Focus() //nolint:errcheck
+				return m, nil
+			case key.Matches(msg, m.keys.Left):
+				m.mode = ModeChannels
+				m.input.Blur()
+				return m, nil
+			default:
+				// Non-arrow key cancels prefix mode; process the key normally.
+			}
+		}
+
+		// Activate prefix mode on Ctrl+B.
+		if key.Matches(msg, m.keys.Prefix) {
+			m.prefixPending = true
+			m.prefixGen++
+			gen := m.prefixGen
+			m.statusGen++
+			m.statusMsg = "Ctrl+B — press ↑/↓/←/→ to navigate"
+			m.statusIsError = false
+			return m, func() tea.Msg {
+				time.Sleep(2 * time.Second)
+				return MsgPrefixTimeout{Gen: gen}
+			}
+		}
+	}
+
 	switch m.mode {
 	case ModeInput:
 		return m.handleKeyInput(msg)
@@ -818,11 +873,6 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → back to input
-		m.mode = ModeInput
-		m.input.Focus() //nolint:errcheck
-		return m, nil
-
 	case key.Matches(msg, m.keys.FocusChannels): // ctrl+l → focus channels
 		m.mode = ModeChannels
 		return m, nil
@@ -902,11 +952,6 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Cancel): // esc → input
-		m.mode = ModeInput
-		m.input.Focus() //nolint:errcheck
-		return m, nil
-
-	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → input
 		m.mode = ModeInput
 		m.input.Focus() //nolint:errcheck
 		return m, nil

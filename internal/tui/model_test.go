@@ -125,20 +125,112 @@ func TestFocusMessages(t *testing.T) {
 	}
 }
 
-// TestFocusInput: ctrl+b from ModeMessages switches to ModeInput.
-func TestFocusInput(t *testing.T) {
+// TestPrefixActivated: Ctrl+B activates prefix mode (shows hint, does not change mode yet).
+func TestPrefixActivated(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+	m.mode = ModeMessages
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+
+	if !m.prefixPending {
+		t.Error("expected prefixPending=true after Ctrl+B")
+	}
+	if m.mode != ModeMessages {
+		t.Errorf("expected mode to stay ModeMessages after Ctrl+B, got %v", m.mode)
+	}
+	if m.statusMsg == "" {
+		t.Error("expected status hint to be shown after Ctrl+B")
+	}
+}
+
+// TestPrefixUpGoesToMessages: Ctrl+B then ↑ switches to ModeMessages from any mode.
+func TestPrefixUpGoesToMessages(t *testing.T) {
+	for _, startMode := range []Mode{ModeInput, ModeChannels} {
+		m := NewModel()
+		m = initModel(t, m)
+		m.mode = startMode
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{
+			kind: feedItemKindMessage,
+			msg:  feedMessage{post: mattermost.Message{ID: "m1", Text: "hi"}, senderName: "alice", channelName: "general"},
+		})
+
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyUp})
+
+		if m.mode != ModeMessages {
+			t.Errorf("startMode=%v: expected ModeMessages after Ctrl+B ↑, got %v", startMode, m.mode)
+		}
+	}
+}
+
+// TestPrefixDownGoesToInput: Ctrl+B then ↓ switches to ModeInput from any mode.
+func TestPrefixDownGoesToInput(t *testing.T) {
+	for _, startMode := range []Mode{ModeMessages, ModeChannels} {
+		m := NewModel()
+		m = initModel(t, m)
+		m.mode = startMode
+
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyDown})
+
+		if m.mode != ModeInput {
+			t.Errorf("startMode=%v: expected ModeInput after Ctrl+B ↓, got %v", startMode, m.mode)
+		}
+	}
+}
+
+// TestPrefixLeftGoesToChannels: Ctrl+B then ← switches to ModeChannels.
+func TestPrefixLeftGoesToChannels(t *testing.T) {
+	for _, startMode := range []Mode{ModeInput, ModeMessages} {
+		m := NewModel()
+		m = initModel(t, m)
+		m.mode = startMode
+
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyLeft})
+
+		if m.mode != ModeChannels {
+			t.Errorf("startMode=%v: expected ModeChannels after Ctrl+B ←, got %v", startMode, m.mode)
+		}
+	}
+}
+
+// TestPrefixRightGoesToMessages: Ctrl+B then → switches to ModeMessages.
+func TestPrefixRightGoesToMessages(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+	m.mode = ModeChannels
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
+		kind: feedItemKindMessage,
+		msg:  feedMessage{post: mattermost.Message{ID: "m1", Text: "hi"}, senderName: "alice", channelName: "general"},
+	})
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRight})
+
+	if m.mode != ModeMessages {
+		t.Errorf("expected ModeMessages after Ctrl+B →, got %v", m.mode)
+	}
+}
+
+// TestPrefixCancelledByNonArrow: Ctrl+B then a non-arrow key cancels prefix mode.
+func TestPrefixCancelledByNonArrow(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
 
-	// Put model in ModeMessages manually.
-	m.mode = ModeMessages
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if !m.prefixPending {
+		t.Fatal("expected prefixPending=true after Ctrl+B")
+	}
+	// Press a letter — prefix should be cancelled.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
 
-	// Send ctrl+b.
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlB})
-	m = mustModel(t, updated)
-
+	if m.prefixPending {
+		t.Error("expected prefixPending=false after non-arrow key")
+	}
 	if m.mode != ModeInput {
-		t.Errorf("expected ModeInput after ctrl+b, got %v", m.mode)
+		t.Errorf("expected mode to remain ModeInput, got %v", m.mode)
 	}
 }
 
