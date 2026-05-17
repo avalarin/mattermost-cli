@@ -20,7 +20,7 @@ func NewFeedView() FeedView {
 func (f *FeedView) SetSize(width, height int) {
 	if !f.ready {
 		f.viewport = viewport.New(width, height)
-		f.viewport.SetContent("Waiting for messages... (no config loaded)")
+		f.viewport.SetContent("Waiting for messages...")
 		f.ready = true
 	} else {
 		f.viewport.Width = width
@@ -38,7 +38,7 @@ func (f FeedView) Update(msg tea.Msg) (FeedView, tea.Cmd) {
 // View renders the feed view.
 func (f FeedView) View() string {
 	if !f.ready {
-		return "Waiting for messages... (no config loaded)"
+		return "Waiting for messages..."
 	}
 	return f.viewport.View()
 }
