@@ -103,8 +103,8 @@ func TestFocusMessages(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
 
-	// Add a feed item so selectLastMessage has something to select.
-	m.feedItems = append(m.feedItems, feedItem{
+	// Add a feed item so SelectLast has something to select.
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
 		kind: feedItemKindMessage,
 		msg: feedMessage{
 			post:        mattermost.Message{ID: "msg1", Text: "hello"},
@@ -112,7 +112,6 @@ func TestFocusMessages(t *testing.T) {
 			channelName: "general",
 		},
 	})
-	m = m.rerenderFeed()
 
 	// Send ctrl+j (focus messages key).
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
@@ -121,8 +120,8 @@ func TestFocusMessages(t *testing.T) {
 	if m.mode != ModeMessages {
 		t.Errorf("expected ModeMessages after ctrl+m, got %v", m.mode)
 	}
-	if m.selectedMsgIdx < 0 {
-		t.Errorf("expected selectedMsgIdx >= 0 after entering ModeMessages, got %d", m.selectedMsgIdx)
+	if m.messagesView.selectedIdx < 0 {
+		t.Errorf("expected selectedIdx >= 0 after entering ModeMessages, got %d", m.messagesView.selectedIdx)
 	}
 }
 
@@ -166,7 +165,7 @@ func TestEmptyInputUpGoesToMessages(t *testing.T) {
 	m = initModel(t, m)
 
 	// Add a message so there's something to select.
-	m.feedItems = append(m.feedItems, feedItem{
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
 		kind: feedItemKindMessage,
 		msg: feedMessage{
 			post:        mattermost.Message{ID: "msg1", Text: "hello"},
@@ -174,7 +173,6 @@ func TestEmptyInputUpGoesToMessages(t *testing.T) {
 			channelName: "general",
 		},
 	})
-	m = m.rerenderFeed()
 
 	// Input should be empty.
 	if m.input.Value() != "" {
@@ -238,7 +236,7 @@ func TestEndJumpsToBottom(t *testing.T) {
 
 	// Add several messages.
 	for i := 0; i < 5; i++ {
-		m.feedItems = append(m.feedItems, feedItem{
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{
 			kind: feedItemKindMessage,
 			msg: feedMessage{
 				post:        mattermost.Message{ID: fmt.Sprintf("msg%d", i), Text: "hello"},
@@ -247,16 +245,15 @@ func TestEndJumpsToBottom(t *testing.T) {
 			},
 		})
 	}
-	m = m.rerenderFeed()
-	m.atBottom = false
+	m.messagesView = m.messagesView.SetAtBottom(false)
 	m.mode = ModeMessages
-	m.selectedMsgIdx = 0
+	m.messagesView.selectedIdx = 0
 
 	// Press End.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnd})
 	m = mustModel(t, updated)
 
-	if !m.atBottom {
+	if !m.messagesView.AtBottom() {
 		t.Errorf("expected atBottom=true after End key, got false")
 	}
 }
@@ -265,7 +262,7 @@ func TestEndJumpsToBottom(t *testing.T) {
 func TestFeedAutoScrollAtBottom(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
-	m.atBottom = true
+	m.messagesView = m.messagesView.SetAtBottom(true)
 
 	// Add a message via handlePostedEvent.
 	evt := buildPostedEvent("msg-auto", "general", "ch1", "alice", "new message")
@@ -273,7 +270,7 @@ func TestFeedAutoScrollAtBottom(t *testing.T) {
 	m = updated
 
 	// After auto-scroll, atBottom should remain true.
-	if !m.atBottom {
+	if !m.messagesView.AtBottom() {
 		t.Errorf("expected atBottom=true after new message with atBottom=true, got false")
 	}
 }
@@ -282,19 +279,19 @@ func TestFeedAutoScrollAtBottom(t *testing.T) {
 func TestFeedNoAutoScrollWhenScrolledUp(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
-	m.atBottom = false
+	m.messagesView = m.messagesView.SetAtBottom(false)
 
-	offsetBefore := m.viewport.YOffset
+	offsetBefore := m.messagesView.VPYOffset()
 
 	evt := buildPostedEvent("msg-noscroll", "general", "ch1", "bob", "another message")
 	updated, _ := m.handlePostedEvent(evt)
 	m = updated
 
-	if m.atBottom {
+	if m.messagesView.AtBottom() {
 		t.Errorf("expected atBottom=false after new message when scrolled up, got true")
 	}
-	if m.viewport.YOffset != offsetBefore {
-		t.Errorf("expected viewport YOffset unchanged, before=%d after=%d", offsetBefore, m.viewport.YOffset)
+	if m.messagesView.VPYOffset() != offsetBefore {
+		t.Errorf("expected viewport YOffset unchanged, before=%d after=%d", offsetBefore, m.messagesView.VPYOffset())
 	}
 }
 
@@ -304,20 +301,17 @@ func TestUpArrowScrollsFeed(t *testing.T) {
 	m = initModel(t, m)
 
 	// Add two messages.
-	m.feedItems = append(m.feedItems,
-		feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg1", Text: "first"}, senderName: "alice", channelName: "general"}},
-		feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg2", Text: "second"}, senderName: "bob", channelName: "general"}},
-	)
-	m = m.rerenderFeed()
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg1", Text: "first"}, senderName: "alice", channelName: "general"}})
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindMessage, msg: feedMessage{post: mattermost.Message{ID: "msg2", Text: "second"}, senderName: "bob", channelName: "general"}})
 	m.mode = ModeMessages
-	m.selectedMsgIdx = 1 // start at second message
+	m.messagesView.selectedIdx = 1 // start at second message
 
 	// Press Up.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	m = mustModel(t, updated)
 
-	if m.selectedMsgIdx != 0 {
-		t.Errorf("expected selectedMsgIdx=0 after Up, got %d", m.selectedMsgIdx)
+	if m.messagesView.selectedIdx != 0 {
+		t.Errorf("expected selectedIdx=0 after Up, got %d", m.messagesView.selectedIdx)
 	}
 }
 
@@ -327,13 +321,12 @@ func TestSlashInMessagesGoesToInput(t *testing.T) {
 	m = initModel(t, m)
 
 	// Add a message and enter ModeMessages.
-	m.feedItems = append(m.feedItems, feedItem{
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
 		kind: feedItemKindMessage,
 		msg:  feedMessage{post: mattermost.Message{ID: "msg1", Text: "hello"}, senderName: "alice", channelName: "general"},
 	})
-	m = m.rerenderFeed()
 	m.mode = ModeMessages
-	m.selectedMsgIdx = 0
+	m.messagesView.selectedIdx = 0
 
 	// Press "/".
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
@@ -346,8 +339,8 @@ func TestSlashInMessagesGoesToInput(t *testing.T) {
 		t.Errorf("expected input value '/', got %q", m.input.Value())
 	}
 	// Selected message should remain.
-	if m.selectedMsgIdx != 0 {
-		t.Errorf("expected selectedMsgIdx=0 to remain after '/' in ModeMessages, got %d", m.selectedMsgIdx)
+	if m.messagesView.selectedIdx != 0 {
+		t.Errorf("expected selectedIdx=0 to remain after '/' in ModeMessages, got %d", m.messagesView.selectedIdx)
 	}
 }
 
@@ -358,12 +351,16 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 
 	// Layout: header(1) + divider(1) + feed + divider(1) + statusbar(1) + input(minInputHeight=1) + divider(1)
 	// feedHeight = height - 5 - minInputHeight (empty textarea starts at 1 line)
+	// MessagesView viewport gets feedH-1 (header row reserved), so vp.Height = feedH - 1
 	wantFeedHeight := height - 5 - minInputHeight
-	if m.viewport.Height != wantFeedHeight {
-		t.Errorf("expected viewport height %d, got %d", wantFeedHeight, m.viewport.Height)
+	wantVPHeight := wantFeedHeight - 1 // viewport is feedH minus header row
+	if m.messagesView.vp.Height != wantVPHeight {
+		t.Errorf("expected viewport height %d, got %d", wantVPHeight, m.messagesView.vp.Height)
 	}
-	if m.viewport.Width != width {
-		t.Errorf("expected viewport width %d, got %d", width, m.viewport.Width)
+	// Messages panel width = total - channelsWidth - 1 (divider)
+	wantMsgsWidth := width - m.channelsWidth - 1
+	if m.messagesView.vp.Width != wantMsgsWidth {
+		t.Errorf("expected viewport width %d, got %d", wantMsgsWidth, m.messagesView.vp.Width)
 	}
 
 	// Resize to a different size: the else-branch must update both dimensions.
@@ -371,11 +368,13 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width2, Height: height2}); return updated }())
 
 	wantFeedHeight2 := height2 - 5 - minInputHeight
-	if m.viewport.Height != wantFeedHeight2 {
-		t.Errorf("after resize: expected viewport height %d, got %d", wantFeedHeight2, m.viewport.Height)
+	wantVPHeight2 := wantFeedHeight2 - 1
+	if m.messagesView.vp.Height != wantVPHeight2 {
+		t.Errorf("after resize: expected viewport height %d, got %d", wantVPHeight2, m.messagesView.vp.Height)
 	}
-	if m.viewport.Width != width2 {
-		t.Errorf("after resize: expected viewport width %d, got %d", width2, m.viewport.Width)
+	wantMsgsWidth2 := width2 - m.channelsWidth - 1
+	if m.messagesView.vp.Width != wantMsgsWidth2 {
+		t.Errorf("after resize: expected viewport width %d, got %d", wantMsgsWidth2, m.messagesView.vp.Width)
 	}
 }
 
@@ -453,7 +452,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 // testModelWithClient builds a Model wired to the given client and initializes the viewport.
 func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
 	t.Helper()
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID)
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mustModel(t, updated)
 }
@@ -586,8 +585,8 @@ func TestDoubleEscClearsAndDeselects(t *testing.T) {
 	if m.escPending {
 		t.Error("expected escPending=false after second esc")
 	}
-	if m.selectedMsgIdx != -1 {
-		t.Errorf("expected selectedMsgIdx=-1 after double esc, got %d", m.selectedMsgIdx)
+	if m.messagesView.selectedIdx != -1 {
+		t.Errorf("expected selectedIdx=-1 after double esc, got %d", m.messagesView.selectedIdx)
 	}
 	if m.statusMsg != "" {
 		t.Errorf("expected empty status after double esc, got %q", m.statusMsg)
@@ -635,7 +634,7 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 
 // TestHelpPopupOpens: /help with no args opens ModeHelp.
 func TestHelpPopupOpens(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22)
 	m = initModel(t, m)
 
 	// Type "/help" and press Enter.
