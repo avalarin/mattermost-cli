@@ -26,7 +26,8 @@ type ChannelsView struct {
 	width           int
 	height          int    // total height including header
 	active          bool   // true when the channels panel has keyboard focus
-	activeHeaderColor string // ANSI color for the header when active
+	activeHeaderFg  string // foreground color for header when active
+	activeHeaderBg  string // background color for header when active
 }
 
 // NewChannelsView creates a ChannelsView with All Activity pinned first,
@@ -202,9 +203,15 @@ func (cv ChannelsView) SetActive(active bool) ChannelsView {
 	return cv
 }
 
-// SetActiveColor sets the ANSI color used for the header when the panel is active.
-func (cv ChannelsView) SetActiveColor(color string) ChannelsView {
-	cv.activeHeaderColor = color
+// SetActiveFg sets the foreground color for the header when the panel is active.
+func (cv ChannelsView) SetActiveFg(color string) ChannelsView {
+	cv.activeHeaderFg = color
+	return cv
+}
+
+// SetActiveBg sets the background color for the header when the panel is active.
+func (cv ChannelsView) SetActiveBg(color string) ChannelsView {
+	cv.activeHeaderBg = color
 	return cv
 }
 
@@ -278,14 +285,19 @@ func (cv ChannelsView) View() string {
 	// Header line: active panel uses configured accent color; inactive is dimmed.
 	var headerStyle lipgloss.Style
 	if cv.active {
-		color := cv.activeHeaderColor
-		if color == "" {
-			color = "15"
+		fg := cv.activeHeaderFg
+		if fg == "" {
+			fg = "15"
+		}
+		bg := cv.activeHeaderBg
+		if bg == "" {
+			bg = "237"
 		}
 		headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Width(cv.width).
-			Foreground(lipgloss.Color(color))
+			Foreground(lipgloss.Color(fg)).
+			Background(lipgloss.Color(bg))
 	} else {
 		headerStyle = lipgloss.NewStyle().Bold(true).Width(cv.width).Foreground(lipgloss.Color("241"))
 	}

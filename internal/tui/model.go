@@ -80,7 +80,8 @@ type Model struct {
 
 	channelsRaw       []mattermost.Channel // original channel list, used for DM name resolution
 	showModeIndicator bool                 // when true, status bar shows current mode badge
-	activeHeaderColor string               // ANSI color for the active panel header (default "15")
+	activeHeaderFg    string               // foreground color for the active panel header
+	activeHeaderBg    string               // background color for the active panel header
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -135,7 +136,8 @@ func NewModelWithHeader(
 	teamID string,
 	channelsWidth int,
 	showModeIndicator bool,
-	activeHeaderColor string,
+	activeHeaderFg string,
+	activeHeaderBg string,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -149,10 +151,15 @@ func NewModelWithHeader(
 	m.client = client
 	m.teamID = teamID
 	m.showModeIndicator = showModeIndicator
-	if activeHeaderColor != "" {
-		m.activeHeaderColor = activeHeaderColor
+	if activeHeaderFg != "" {
+		m.activeHeaderFg = activeHeaderFg
 	} else {
-		m.activeHeaderColor = "15"
+		m.activeHeaderFg = "15"
+	}
+	if activeHeaderBg != "" {
+		m.activeHeaderBg = activeHeaderBg
+	} else {
+		m.activeHeaderBg = "237"
 	}
 
 	if channelsWidth > 0 {
@@ -913,7 +920,7 @@ func (m Model) View() string {
 
 // renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
 func (m Model) renderBody() string {
-	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveColor(m.activeHeaderColor).View()
+	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveFg(m.activeHeaderFg).SetActiveBg(m.activeHeaderBg).View()
 	msgsHeader := m.renderMessagesHeader()
 	msgsContent := m.messagesView.View()
 
@@ -949,14 +956,19 @@ func (m Model) renderMessagesHeader() string {
 	}
 	var headerStyle lipgloss.Style
 	if m.mode == ModeMessages {
-		color := m.activeHeaderColor
-		if color == "" {
-			color = "15"
+		fg := m.activeHeaderFg
+		if fg == "" {
+			fg = "15"
+		}
+		bg := m.activeHeaderBg
+		if bg == "" {
+			bg = "237"
 		}
 		headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Width(msgsW).
-			Foreground(lipgloss.Color(color))
+			Foreground(lipgloss.Color(fg)).
+			Background(lipgloss.Color(bg))
 	} else {
 		headerStyle = lipgloss.NewStyle().Bold(true).Width(msgsW).Foreground(lipgloss.Color("241"))
 	}
@@ -1031,7 +1043,7 @@ func (m Model) renderStatusBar() string {
 	if !hasBadge {
 		return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
 	}
-	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.activeHeaderColor))
+	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.activeHeaderFg))
 	styledBadge := badgeStyle.Render(badge)
 
 	// Reserve space for the badge (plain-text width) so the status message
