@@ -115,14 +115,15 @@ mattermost-cli/
 │   ├── mattermost/
 │   │   ├── client.go            # REST: GetTeam, GetCurrentUser, GetChannels, SendMessage, FindOrCreateDM
 │   │   ├── websocket.go         # WS Events API, reconnect, exponential backoff
-│   │   └── types.go             # Message, Channel, Team, User, Event (локальные типы)
+│   │   └── types.go             # Message, Channel, Team, User, Event, ConnStatus (локальные типы)
 │   ├── store/
-│   │   ├── store.go             # in-memory состояние: messages, connStatus
-│   │   └── db.go                # SQLite: инициализация схемы, read/write
+│   │   ├── store.go             # in-memory список сообщений (cap 1000), GetParentSnippet  [stub до T7]
+│   │   └── db.go                # SQLite: схема channels + messages, read/write            [stub до T7]
 │   └── tui/
 │       ├── model.go             # root Bubble Tea Model, Init/Update/View
+│       ├── msgs.go              # tea.Msg типы: MsgConnStatus, MsgCommandResult, MsgClearStatus
 │       ├── views/
-│       │   └── feed.go          # viewport с лентой сообщений
+│       │   └── feed.go          # FeedView (viewport wrapper) — будет подключён в T7
 │       ├── keys.go              # KeyMap
 │       └── styles.go            # Lip Gloss стили
 ├── .golangci.yml                # конфиг линтера
@@ -131,21 +132,47 @@ mattermost-cli/
 └── go.sum
 ```
 
+**Принятые решения по структуре:**
+- `ConnStatus` живёт в `mattermost/types.go` (а не в `tui`), чтобы избежать циклического импорта: `tui` импортирует `mattermost`, но не наоборот.
+- `views/feed.go` определён, но до T7 не используется — `model.go` управляет viewport напрямую.
+- WS-библиотека: `github.com/coder/websocket` (fork nhooyr.io/websocket, идентичный API, активно поддерживается).
+
 ---
 
 ## Поток данных
 
+**Текущий (T6, до T7):**
+```
+WebSocket Events (MM API)
+      │
+      ▼
+mattermost/websocket.go  (chan Event → TUI напрямую)
+      │
+      ▼
+tui/model.go → handlePostedEvent → feedLines + msgCache (in-model)
+      │
+      ▼
+tui/model.go → Update() → View()
+      │
+      ├── /send #channel ──► client.GetChannelByName → client.SendMessage
+      └── /send @user    ──► client.FindOrCreateDM   → client.SendMessage
+```
+
+**Целевой (после T7):**
 ```
 WebSocket Events (MM API)
       │
       ▼
 mattermost/websocket.go
       │  chan Event
+      ▼
+tui/model.go (handlePostedEvent)
+      │  store.AddMessage()
       ├──────────────────────► store/db.go (SQLite persist)
       │
       ▼
-store/store.go (in-memory messages list, conn status)
-      │  tea.Msg
+store/store.go (in-memory список, GetParentSnippet)
+      │  MsgNewMessage (tea.Cmd)
       ▼
 tui/model.go → Update() → View()
       │
@@ -367,22 +394,56 @@ tui/model.go → Update() → View()
 
 ---
 
-### T7: SQLite + in-memory store
+### T7: SQLite + in-memory store (рефактор потока данных)
 
-**Что делаем** (объединены бывшие T6+T7):
-- SQLite: `Open(path) (*DB, error)`, схема `channels` + `messages`, `InsertMessage`, `GetRecentMessages`, `GetMessageByID`
-- In-memory `Store`: упорядоченный список сообщений (cap 1000), `AddMessage`, `GetParentSnippet`
-- WS-ивенты сохраняются в SQLite; при следующем запуске приложение загружает их из БД
-- `tea.Msg` типы: `MsgNewMessage`, `MsgConnStatus`, `MsgCommandResult`, `MsgClearStatus`
+**Контекст:** В T6 `feedLines` и `msgCache` живут прямо в `tui.Model`. T7 — полный рефактор: переносим их в `Store`, меняем поток WS→TUI на WS→Store→TUI, добавляем SQLite-персистентность.
+
+**Что делаем:**
+
+*SQLite (`internal/store/db.go`):*
+- Добавляем `modernc.org/sqlite` в зависимости (pure Go, без CGO)
+- `Open(path) (*DB, error)`: создаёт/открывает БД, инициализирует схему
+- Схема: таблицы `channels(id, name)` и `messages(id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at)`
+- `InsertMessage(msg Message) error` — upsert по id (дублирующий вызов не ошибка)
+- `GetRecentMessages(limit int) ([]Message, error)` — отсортированы по `create_at`
+- `GetMessageByID(id string) (*Message, error)`
+
+*In-memory Store (`internal/store/store.go`):*
+- Поле `messages []Message` с cap 1000 (при превышении — отбрасываем старые)
+- `AddMessage(msg Message) string` — добавляет в список + сохраняет в DB, возвращает отрендеренную строку
+- `GetParentSnippet(rootID string) string` — первые 40 символов текста родителя из in-memory списка или DB
+- `LoadRecent(limit int) ([]Message, error)` — загружает из DB при старте
+
+*Рефактор `tui/model.go`:*
+- Убираем `feedLines []string` и `msgCache map[string]string` из `Model`
+- Добавляем `store *store.Store` в `Model`
+- `handlePostedEvent`: декодирует пост → `store.AddMessage()` → получает строку → обновляет viewport
+- `Init()`: добавляет `tea.Cmd` для загрузки истории из store → `MsgHistoryLoaded`
+- Вводим `MsgNewMessage` обратно — используется при загрузке истории (startup) через `tea.Cmd`
+
+*Изменения `main.go`:*
+- Открывает SQLite через `store.Open(dbPath)` перед запуском TUI
+- Создаёт `store.NewStore(db)`, передаёт в `tui.NewModelWithHeader`
+- `dbPath` = `~/.config/mattermost-cli/db.sqlite` (продакшен) или из конфига
+
+*Новый `tea.Msg` тип (добавляем в `tui/msgs.go`):*
+```go
+type MsgNewMessage struct {
+    Post        mattermost.Message
+    SenderName  string
+    ChannelName string
+}
+```
 
 **Критерии приемки:**
-- Сообщения сохраняются между перезапусками приложения
-- Тред-ответы находят сниппет родителя даже если родитель пришёл до текущей сессии
+- Сообщения сохраняются между перезапусками
+- Тред-ответы находят сниппет родителя, даже если родитель пришёл до текущей сессии
+- `feedLines`/`msgCache` убраны из `tui.Model` — Model не хранит raw данные сообщений
 
 **Как проверить руками:**
 1. Получи несколько сообщений в приложении → закрой через `/quit`
-2. Перезапусти приложение → сообщения из предыдущей сессии видны в ленте
-3. Получи тредовый ответ на старое сообщение → сниппет родителя показывается корректно
+2. Перезапусти → сообщения из предыдущей сессии видны в ленте
+3. Получи тредовый ответ на старое (из прошлой сессии) сообщение → сниппет родителя отображается
 
 **Сценарии автотестов:**
 
@@ -393,7 +454,8 @@ tui/model.go → Update() → View()
 | 3 | `TestInsertDuplicateIgnored` | Повторный `InsertMessage` с тем же ID не возвращает ошибку |
 | 4 | `TestGetRecentMessagesOrdering` | Сообщения отсортированы по `create_at` (новые последними) |
 | 5 | `TestGetParentSnippetFound` | Если parent в Store — возвращает первые 40 символов |
-| 6 | `TestAddMessageCap` | При добавлении >1000 сообщений в Store — старые отбрасываются |
+| 6 | `TestGetParentSnippetFromDB` | Если parent только в DB (не в памяти) — тоже возвращает сниппет |
+| 7 | `TestAddMessageCap` | При добавлении >1000 сообщений в Store — старые отбрасываются из памяти |
 
 ---
 
@@ -437,24 +499,30 @@ tui/model.go → Update() → View()
 
 ### T9: Клавиатурная навигация
 
+**Контекст:** Большинство поведений (`atBottom`, `End`, авто-скролл, блокировка в `ModeCommand`) уже реализовано в T6 как часть TUI. T9 закрепляет это формально: переходит на `key.Matches()` вместо сравнения raw типов, добавляет тесты, оформляет `KeyMap`.
+
 **Что делаем:**
-- `KeyMap` структура (совместима с `bubbles/help`)
-- `↑`/`↓`: скролл ленты на 1 строку; в `ModeCommand` — не работают для feed
-- `PgUp`/`PgDn`: скролл на высоту viewport
-- `End`: скролл к последнему сообщению + `atBottom = true`
-- Auto-scroll: при `atBottom=true` и приходе нового сообщения — viewport следует за лентой
-- При скролле вверх — `atBottom = false`, auto-scroll отключается
+- Рефактор `handleKeyNormal` и `handleKeyCommand`: заменить сравнения `msg.Type == tea.KeyXxx` на `key.Matches(msg, m.keys.Xxx)` — чтобы KeyMap был единственным источником биндингов
+- Дополнить `KeyMap` биндингами для `PgUp`/`PgDn`/`End` (если ещё не добавлены)
+- Убедиться, что `↑`/`↓`/`PgUp`/`PgDn` в `ModeCommand` не двигают feed (идут в textinput)
+- Написать тесты для всех навигационных сценариев
+
+**Уже реализовано в T6 (не переделываем, только тестируем):**
+- `atBottom = true` по умолчанию
+- `End` → `atBottom = true`, `GotoBottom()`
+- Scroll-up через viewport → `atBottom = false` (определяется по `ScrollPercent`)
+- Новое сообщение при `atBottom=true` → авто-скролл в конец
+- В `ModeCommand` клавиши идут в textinput, не в viewport
 
 **Критерии приемки:**
-- Все клавиши работают в нормальном режиме
+- Все клавиши работают через KeyMap (нет прямых сравнений `tea.KeyXxx`)
 - В режиме ввода команды — навигационные клавиши не двигают ленту
 
 **Как проверить руками:**
-1. Подожди, пока в ленту придёт 30+ сообщений (или добавь через `/send`)
-2. Нажми `↑` несколько раз → лента скроллится вверх, `atBottom=false`
-3. Нажми `End` → скролл прыгает вниз, auto-scroll включается
-4. Следующее сообщение → лента автоматически следует за ним
-5. Нажми `/` → наберитай текст → `↑`/`↓` не двигают feed
+1. Получи 30+ сообщений → нажми `↑` несколько раз → лента скроллится вверх, `atBottom=false`
+2. Нажми `End` → скролл прыгает вниз, auto-scroll включается
+3. Следующее сообщение → лента автоматически следует за ним
+4. Нажми `/` → наберитай текст → `↑`/`↓` не двигают feed
 
 **Сценарии автотестов:**
 
@@ -512,12 +580,16 @@ func backoffDuration(attempt int) time.Duration {
 
 ### tea.Msg типы (store → TUI)
 
-```go
-type MsgNewMessage    struct{ Msg mattermost.Message }
-type MsgConnStatus    struct{ Status ConnStatus }
-type MsgCommandResult struct{ Err error; Info string }
-type MsgClearStatus   struct{}
-```
+Живут в `internal/tui/msgs.go`. Актуальный набор по задачам:
+
+| Тип | Статус | Задача |
+|-----|--------|--------|
+| `MsgConnStatus{ Status mattermost.ConnStatus }` | ✅ активен | T6 |
+| `MsgCommandResult{ Err error; Info string }` | ✅ определён, используется в T8 | T6/T8 |
+| `MsgClearStatus{}` | ✅ определён, используется в T8 | T6/T8 |
+| `MsgNewMessage{ Post mattermost.Message; SenderName, ChannelName string }` | вводится в T7 (startup history load) | T7 |
+
+> `MsgNewMessage` был удалён в T6 как неиспользуемый. В T7 возвращается для загрузки истории при старте.
 
 ### SQLite DSN
 

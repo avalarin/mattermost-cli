@@ -20,10 +20,11 @@
 
 | Слой | Технология | Обоснование |
 |---|---|---|
-| Язык | Go 1.22+ | Один бинарь, встроенный WS-клиент, официальный MM SDK |
+| Язык | Go 1.24+ | Один бинарь, встроенный tooling, без runtime зависимостей |
 | TUI | [Bubble Tea](https://github.com/charmbracelet/bubbletea) | Elm Architecture, активное сообщество, Lip Gloss + Bubbles |
 | Стилизация | Lip Gloss | Адаптивные цвета, border-boxes, flex-like layout |
-| Mattermost API | `github.com/mattermost/mattermost/server/public/model` | Официальный клиент, WebSocket Events API |
+| Mattermost API | кастомный REST/WS клиент (`internal/mattermost`) | Минимальный набор эндпоинтов, полный контроль над WS-соединением |
+| WebSocket | `github.com/coder/websocket` | Fork nhooyr.io/websocket, pure Go, активно поддерживается |
 | AI | `github.com/anthropics/anthropic-sdk-go` | Claude API, tool_use, streaming |
 | БД | SQLite (`modernc.org/sqlite`) | Pure Go, без CGO, хранит сообщения + AI-историю |
 | Конфиг | TOML (`github.com/BurntSushi/toml`) | Читаемый формат, стандарт для Go-утилит |
@@ -119,7 +120,8 @@ theme         = "auto"      # "auto" | "dark" | "light"
 | `End` | Прыжок к последнему сообщению |
 | `/` | Открыть командную строку |
 | `Esc` | Сбросить ввод / отменить действие |
-| `Ctrl+C` | Выход |
+| `Ctrl+C` | Очистить поле ввода (при непустом) / показать подсказку (при пустом) |
+| `/quit` | Выход из приложения |
 
 ---
 
@@ -314,8 +316,9 @@ tui/model.go → View (рендер TUI)
 | Поле ввода сообщения | Стандартные стрелки и текстовые биндинги |
 | AI-панель | `Ctrl+A` — открыть/скрыть |
 | Командная строка | `/` — открыть, `Esc` — закрыть |
+| Очистить ввод | `Ctrl+C` (при непустом поле) |
 | Отмена / закрыть | `Esc` |
-| Выход из приложения | `Ctrl+C` |
+| Выход из приложения | `/quit` |
 
 ---
 
@@ -325,9 +328,8 @@ tui/model.go → View (рендер TUI)
 github.com/charmbracelet/bubbletea
 github.com/charmbracelet/lipgloss
 github.com/charmbracelet/bubbles
-github.com/mattermost/mattermost/server/public/model
+github.com/coder/websocket           # WS-клиент, fork nhooyr.io/websocket
 github.com/BurntSushi/toml
 github.com/anthropics/anthropic-sdk-go
-modernc.org/sqlite                   # pure Go SQLite, без CGO
-golang.org/x/term                    # terminal size detection
+modernc.org/sqlite                   # pure Go SQLite, без CGO (добавляется в T7)
 ```
