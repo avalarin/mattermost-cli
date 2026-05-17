@@ -19,8 +19,11 @@ type Team struct {
 
 // Channel represents a Mattermost channel.
 type Channel struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Type        string `json:"type"`     // "O"=public, "P"=private, "D"=DM, "G"=group DM
+	DeleteAt    int64  `json:"delete_at"` // non-zero = archived
 }
 
 // User represents a Mattermost user.

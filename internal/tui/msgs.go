@@ -48,3 +48,8 @@ type MsgCtrlCTimeout struct{ Gen int }
 
 // MsgOpenHelp signals that the help popup should be opened.
 type MsgOpenHelp struct{}
+
+// MsgChannelSelected is emitted when the user opens a channel from the channels panel.
+type MsgChannelSelected struct {
+	ChannelID string // empty string = All Activity
+}

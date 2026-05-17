@@ -34,6 +34,8 @@ const (
 	ModeMessages
 	// ModeHelp is the help popup mode: scrollable keyboard shortcut reference.
 	ModeHelp
+	// ModeChannels is the channels sidebar navigation mode.
+	ModeChannels
 )
 
 const (
@@ -41,60 +43,51 @@ const (
 	maxInputHeight = 8
 )
 
-// feedMessage stores raw message data for re-rendering on resize.
-type feedMessage struct {
-	post        mattermost.Message
-	senderName  string
-	channelName string
-}
-
-// feedItemKind distinguishes the two kinds of item that can appear in the feed.
-type feedItemKind int
-
-const (
-	feedItemKindMessage feedItemKind = iota
-	feedItemKindSystem
-)
-
-// feedItem is a union type for the feed: either a chat message or a system-generated line.
-type feedItem struct {
-	kind   feedItemKind
-	msg    feedMessage // valid when kind == feedItemKindMessage
-	system string      // valid when kind == feedItemKindSystem (pre-formatted text)
-}
-
 // Model is the root Bubble Tea model.
 type Model struct {
-	width          int
-	height         int
-	mode           Mode
-	header         HeaderInfo
-	input          textarea.Model
-	viewport       viewport.Model
-	statusMsg      string
-	statusIsError  bool
-	keys           KeyMap
-	styles         Styles
-	ready          bool
-	events         <-chan mattermost.Event
-	connStatus     <-chan mattermost.ConnStatus
-	channels       map[string]string // channelID -> channelName
-	store          *store.Store
-	feedItems      []feedItem
-	atBottom       bool
-	client         *mattermost.Client
-	teamID         string
-	registry       *Registry
-	statusGen      int  // incremented on each MsgCommandResult to guard stale MsgClearStatus
-	selectedMsgIdx int  // index into feedItems; -1 = none selected
-	msgLineOffsets []int // starting line of each feedItem in viewport (built during rerenderFeed)
-	escPending     bool // true after first Esc press, waiting for second
-	escGen         int  // incremented on each Esc press to invalidate stale MsgEscTimeout
-	ctrlCPending   bool // true after first Ctrl+C press, waiting for second
-	ctrlCGen       int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
-	prevMode       Mode           // mode before help popup opened, restored on close
-	helpViewport   viewport.Model // scrollable popup content
-	helpReady      bool           // whether helpViewport has been initialized
+	width         int
+	height        int
+	mode          Mode
+	header        HeaderInfo
+	input         textarea.Model
+	statusMsg     string
+	statusIsError bool
+	keys          KeyMap
+	styles        Styles
+	ready         bool
+	events        <-chan mattermost.Event
+	connStatus    <-chan mattermost.ConnStatus
+	channels      map[string]string // channelID -> channelName
+	store         *store.Store
+	client        *mattermost.Client
+	teamID        string
+	registry      *Registry
+	statusGen     int  // incremented on each MsgCommandResult to guard stale MsgClearStatus
+	escPending    bool // true after first Esc press, waiting for second
+	escGen        int  // incremented on each Esc press to invalidate stale MsgEscTimeout
+	ctrlCPending  bool // true after first Ctrl+C press, waiting for second
+	ctrlCGen      int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
+	prevMode      Mode           // mode before help popup opened, restored on close
+	helpViewport  viewport.Model // scrollable popup content
+	helpReady     bool           // whether helpViewport has been initialized
+
+	// Two-panel layout.
+	messagesView    MessagesView
+	channelsView    ChannelsView
+	activeChannelID string // "" = All Activity
+	channelsWidth   int    // from config, default 22
+	feedH           int    // cached body height, updated in handleWindowSize/syncInputHeight
+}
+
+// clamp returns v clamped to [lo, hi].
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 // NewModel creates a new Model with default settings.
@@ -111,17 +104,17 @@ func NewModel() Model {
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
 	return Model{
-		input:          ta,
-		keys:           DefaultKeyMap(),
-		styles:         DefaultStyles(),
-		atBottom:       true,
-		selectedMsgIdx: -1,
-		statusMsg:      "",
+		input:         ta,
+		keys:          DefaultKeyMap(),
+		styles:        DefaultStyles(),
+		statusMsg:     "",
+		channelsWidth: 22,
+		messagesView:  NewMessagesView(nil),
 	}
 }
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
-// WebSocket channels, channel list, store, REST client, and team ID.
+// WebSocket channels, channel list, store, REST client, team ID, and channels sidebar width.
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -131,6 +124,7 @@ func NewModelWithHeader(
 	st *store.Store,
 	client *mattermost.Client,
 	teamID string,
+	channelsWidth int,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -144,6 +138,10 @@ func NewModelWithHeader(
 	m.client = client
 	m.teamID = teamID
 
+	if channelsWidth > 0 {
+		m.channelsWidth = channelsWidth
+	}
+
 	if len(channels) > 0 {
 		m.channels = make(map[string]string, len(channels))
 		for _, ch := range channels {
@@ -151,6 +149,8 @@ func NewModelWithHeader(
 		}
 	}
 
+	m.channelsView = NewChannelsView(channels)
+	m.messagesView = NewMessagesView(st)
 	m.registry = buildRegistry(client, teamID)
 
 	return m
@@ -322,8 +322,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			return m, nil
 		}
+		items := make([]feedItem, 0, len(msg.Messages))
 		for _, sm := range msg.Messages {
-			m.feedItems = append(m.feedItems, feedItem{
+			items = append(items, feedItem{
 				kind: feedItemKindMessage,
 				msg: feedMessage{
 					post: mattermost.Message{
@@ -339,11 +340,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				},
 			})
 		}
-		if m.ready {
-			m = m.rerenderFeed()
-			if m.atBottom {
-				m.viewport.GotoBottom()
-			}
+		m.messagesView = m.messagesView.SetFeedItems(items)
+		if m.messagesView.AtBottom() {
+			m.messagesView = m.messagesView.GotoBottom()
 		}
 		return m, nil
 
@@ -366,13 +365,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgSystemMessage:
-		m.feedItems = append(m.feedItems, feedItem{kind: feedItemKindSystem, system: msg.Text})
-		if m.ready {
-			m = m.rerenderFeed()
-			if m.atBottom {
-				m.viewport.GotoBottom()
-			}
-		}
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, system: msg.Text})
 		return m, nil
 
 	case MsgEscTimeout:
@@ -393,12 +386,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MsgOpenHelp:
 		return m.openHelp()
+
+	case MsgChannelSelected:
+		m.activeChannelID = msg.ChannelID
+		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
+		// In T1, no actual channel filtering yet — just update state.
+		return m, nil
 	}
 
 	// Forward other messages to viewport when ready.
 	if m.ready {
 		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
+		m.messagesView, cmd = m.messagesView.UpdateVP(msg)
 		return m, cmd
 	}
 
@@ -410,31 +409,24 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.height = msg.Height
 	m.input.SetWidth(m.width)
 
-	// Input height is dynamic (1–8 lines); recompute after width change (which may reflow lines).
-	inputH := m.input.LineCount()
-	if inputH < minInputHeight {
-		inputH = minInputHeight
-	}
-	if inputH > maxInputHeight {
-		inputH = maxInputHeight
-	}
+	inputH := clamp(m.input.LineCount(), minInputHeight, maxInputHeight)
 	m.input.SetHeight(inputH)
 
-	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(inputH) + divider(1)
-	feedHeight := m.height - 5 - inputH
-	if feedHeight < 0 {
-		feedHeight = 0
+	feedH := m.height - 5 - inputH
+	if feedH < 0 {
+		feedH = 0
+	}
+	m.feedH = feedH
+
+	chW := m.channelsWidth
+	msgsW := m.width - chW - 1 // 1 for vertical divider
+	if msgsW < 1 {
+		msgsW = 1
 	}
 
-	if !m.ready {
-		m.viewport = viewport.New(m.width, feedHeight)
-		m = m.rerenderFeed()
-		m.ready = true
-	} else {
-		m.viewport.Width = m.width
-		m.viewport.Height = feedHeight
-		m = m.rerenderFeed()
-	}
+	m.channelsView = m.channelsView.SetSize(chW, feedH)
+	m.messagesView = m.messagesView.SetSize(msgsW, feedH)
+	m.ready = true
 
 	if m.helpReady {
 		_, _, innerW, innerH := m.helpDimensions()
@@ -446,39 +438,26 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// syncInputHeight adjusts the textarea display height and the viewport height to match
+// syncInputHeight adjusts the textarea display height and the panel heights to match
 // the current textarea content (clamped to minInputHeight–maxInputHeight lines).
-// Must be called after any operation that may change the textarea content line count.
 func (m Model) syncInputHeight() Model {
-	lines := m.input.LineCount()
-	if lines < minInputHeight {
-		lines = minInputHeight
-	}
-	if lines > maxInputHeight {
-		lines = maxInputHeight
-	}
+	lines := clamp(m.input.LineCount(), minInputHeight, maxInputHeight)
 	m.input.SetHeight(lines)
 	if m.ready && m.height > 0 {
-		feedHeight := m.height - 5 - lines
-		if feedHeight < 0 {
-			feedHeight = 0
+		feedH := m.height - 5 - lines
+		if feedH < 0 {
+			feedH = 0
 		}
-		m.viewport.Height = feedHeight
+		m.feedH = feedH
+		chW := m.channelsWidth
+		msgsW := m.width - chW - 1
+		if msgsW < 1 {
+			msgsW = 1
+		}
+		m.channelsView = m.channelsView.SetSize(chW, feedH)
+		m.messagesView = m.messagesView.SetSize(msgsW, feedH)
 	}
 	return m
-}
-
-// pageSize returns the number of messages to skip per PageUp/PageDown in ModeMessages.
-// Approximates how many messages fit on screen (viewport height / ~3 lines per message).
-func (m Model) pageSize() int {
-	n := m.viewport.Height / 3
-	if n < 1 {
-		n = 1
-	}
-	if n > 20 {
-		n = 20
-	}
-	return n
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -497,13 +476,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyMessages(msg)
 	case ModeHelp:
 		return m.handleKeyHelp(msg)
+	case ModeChannels:
+		return m.handleKeyChannels(msg)
 	}
 	return m, nil
 }
 
 // handleCtrlC implements the double-Ctrl+C exit mechanic.
-// First press: show hint and start 3s window.
-// Second press within 3s: quit.
 func (m Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if m.ctrlCPending {
 		return m, tea.Quit
@@ -529,20 +508,24 @@ func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Cancel): // esc
 		return m.handleEsc()
 
+	case key.Matches(msg, m.keys.FocusChannels): // ctrl+l → focus channels
+		m.mode = ModeChannels
+		return m, nil
+
 	case key.Matches(msg, m.keys.FocusMessages): // ctrl+j → focus messages
 		m.mode = ModeMessages
-		m = m.selectLastMessage()
+		m.messagesView = m.messagesView.SelectLast()
 		if m.ready {
-			m = m.rerenderFeed()
+			m.messagesView = m.messagesView.rerenderFeed()
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Up): // up from empty input → go to messages
 		if m.input.Value() == "" {
 			m.mode = ModeMessages
-			m = m.selectLastMessage()
+			m.messagesView = m.messagesView.SelectLast()
 			if m.ready {
-				m = m.rerenderFeed()
+				m.messagesView = m.messagesView.rerenderFeed()
 			}
 			return m, nil
 		}
@@ -581,47 +564,38 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus() //nolint:errcheck
 		return m, nil
 
+	case key.Matches(msg, m.keys.FocusChannels): // ctrl+l → focus channels
+		m.mode = ModeChannels
+		return m, nil
+
 	case key.Matches(msg, m.keys.Up):
-		m = m.moveCursorUp()
-		if m.ready {
-			m = m.rerenderFeed()
-		}
+		m.messagesView = m.messagesView.MoveCursorUp()
 		return m, nil
 
 	case key.Matches(msg, m.keys.Down):
-		m = m.moveCursorDown()
-		if m.ready {
-			m = m.rerenderFeed()
-		}
+		m.messagesView = m.messagesView.MoveCursorDown()
 		return m, nil
 
 	case key.Matches(msg, m.keys.End):
-		m.atBottom = true
-		m.viewport.GotoBottom()
-		m = m.selectLastMessage()
+		m.messagesView = m.messagesView.SelectLast()
+		m.messagesView = m.messagesView.GotoBottom()
 		if m.ready {
-			m = m.rerenderFeed()
+			m.messagesView = m.messagesView.rerenderFeed()
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageUp):
-		m.atBottom = false
-		n := m.pageSize()
+		m.messagesView = m.messagesView.SetAtBottom(false)
+		n := m.messagesView.PageSize()
 		for i := 0; i < n; i++ {
-			m = m.moveCursorUp()
-		}
-		if m.ready {
-			m = m.rerenderFeed()
+			m.messagesView = m.messagesView.MoveCursorUp()
 		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageDown):
-		n := m.pageSize()
+		n := m.messagesView.PageSize()
 		for i := 0; i < n; i++ {
-			m = m.moveCursorDown()
-		}
-		if m.ready {
-			m = m.rerenderFeed()
+			m.messagesView = m.messagesView.MoveCursorDown()
 		}
 		return m, nil
 	}
@@ -640,8 +614,54 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forward unknown keys to viewport.
 	if m.ready {
 		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
+		m.messagesView, cmd = m.messagesView.UpdateVP(msg)
 		return m, cmd
+	}
+
+	return m, nil
+}
+
+// handleKeyChannels handles key input when in ModeChannels.
+func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Cancel): // esc → input
+		m.mode = ModeInput
+		m.input.Focus() //nolint:errcheck
+		return m, nil
+
+	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → input
+		m.mode = ModeInput
+		m.input.Focus() //nolint:errcheck
+		return m, nil
+
+	case key.Matches(msg, m.keys.Up):
+		m.channelsView = m.channelsView.MoveUp()
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		m.channelsView = m.channelsView.MoveDown()
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageUp):
+		m.channelsView = m.channelsView.PageUp()
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageDown):
+		m.channelsView = m.channelsView.PageDown()
+		return m, nil
+
+	case key.Matches(msg, m.keys.Send): // enter → open channel
+		if m.channelsView.IsSelectedArchived() {
+			name := m.channelsView.SelectedDisplayName()
+			m.statusMsg = "Channel " + name + " is archived"
+			m.statusIsError = true
+			m.statusGen++
+			return m, clearStatusAfter(3*time.Second, m.statusGen)
+		}
+		var channelID string
+		m.channelsView, channelID = m.channelsView.OpenSelected()
+		m.activeChannelID = channelID
+		return m, func() tea.Msg { return MsgChannelSelected{ChannelID: channelID} }
 	}
 
 	return m, nil
@@ -655,15 +675,13 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		// Second esc: clear input, deselect, and scroll to bottom.
 		m.input.Reset()
 		m = m.syncInputHeight()
-		m.selectedMsgIdx = -1
+		m.messagesView = m.messagesView.ClearSelection()
 		m.escPending = false
 		m.escGen++
 		m.statusMsg = ""
 		m.statusIsError = false
 		if m.ready {
-			m = m.rerenderFeed()
-			m.atBottom = true
-			m.viewport.GotoBottom()
+			m.messagesView = m.messagesView.GotoBottom()
 		}
 		return m, nil
 	}
@@ -677,70 +695,6 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		time.Sleep(3 * time.Second)
 		return MsgEscTimeout{Gen: gen}
 	}
-}
-
-// selectLastMessage selects the last feedItemKindMessage in feedItems.
-func (m Model) selectLastMessage() Model {
-	for i := len(m.feedItems) - 1; i >= 0; i-- {
-		if m.feedItems[i].kind == feedItemKindMessage {
-			m.selectedMsgIdx = i
-			m = m.scrollToSelected()
-			return m
-		}
-	}
-	m.selectedMsgIdx = -1
-	return m
-}
-
-// moveCursorUp moves selection to the previous message.
-func (m Model) moveCursorUp() Model {
-	for i := m.selectedMsgIdx - 1; i >= 0; i-- {
-		if m.feedItems[i].kind == feedItemKindMessage {
-			m.selectedMsgIdx = i
-			m.atBottom = false
-			return m.scrollToSelected()
-		}
-	}
-	return m // already at top
-}
-
-// moveCursorDown moves selection to the next message.
-func (m Model) moveCursorDown() Model {
-	for i := m.selectedMsgIdx + 1; i < len(m.feedItems); i++ {
-		if m.feedItems[i].kind == feedItemKindMessage {
-			m.selectedMsgIdx = i
-			// If this is the last selectable message, scroll to bottom.
-			if !m.hasSelectableMessageAfter(i) {
-				m.atBottom = true
-				m.viewport.GotoBottom()
-			}
-			return m.scrollToSelected()
-		}
-	}
-	return m // already at bottom
-}
-
-// hasSelectableMessageAfter returns true if there is a feedItemKindMessage after index i.
-func (m Model) hasSelectableMessageAfter(i int) bool {
-	for j := i + 1; j < len(m.feedItems); j++ {
-		if m.feedItems[j].kind == feedItemKindMessage {
-			return true
-		}
-	}
-	return false
-}
-
-// scrollToSelected scrolls the viewport to show the selected message.
-func (m Model) scrollToSelected() Model {
-	if !m.ready {
-		return m
-	}
-	if m.selectedMsgIdx < 0 || m.selectedMsgIdx >= len(m.msgLineOffsets) {
-		return m
-	}
-	lineOffset := m.msgLineOffsets[m.selectedMsgIdx]
-	m.viewport.SetYOffset(lineOffset)
-	return m
 }
 
 func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
@@ -833,7 +787,7 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		})
 	}
 
-	m.feedItems = append(m.feedItems, feedItem{
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
 		kind: feedItemKindMessage,
 		msg: feedMessage{
 			post:        post,
@@ -842,158 +796,7 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		},
 	})
 
-	m = m.rerenderFeed()
-
-	if m.atBottom {
-		m.viewport.GotoBottom()
-	}
-
 	return m, nil
-}
-
-// rerenderFeed rebuilds the viewport content from stored feed items at the current width.
-// It also builds msgLineOffsets for cursor navigation and applies selection highlight.
-func (m Model) rerenderFeed() Model {
-	if len(m.feedItems) == 0 {
-		if m.ready {
-			m.viewport.SetContent("Waiting for messages...")
-		}
-		m.msgLineOffsets = nil
-		return m
-	}
-
-	parts := make([]string, 0, len(m.feedItems))
-	offsets := make([]int, len(m.feedItems))
-	lineCount := 0
-
-	for idx, item := range m.feedItems {
-		offsets[idx] = lineCount
-		var rendered string
-		switch item.kind {
-		case feedItemKindMessage:
-			fm := item.msg
-			snippet := ""
-			if fm.post.RootID != "" && m.store != nil {
-				snippet = m.store.GetParentSnippet(fm.post.RootID)
-			}
-			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width)
-			// Apply selection highlight when this message is selected.
-			if idx == m.selectedMsgIdx {
-				rendered = highlightBlock(rendered, m.width)
-			}
-		case feedItemKindSystem:
-			rendered = item.system
-		}
-		parts = append(parts, rendered)
-		lineCount += strings.Count(rendered, "\n") + 1
-	}
-
-	m.msgLineOffsets = offsets
-	if m.ready {
-		m.viewport.SetContent(strings.Join(parts, "\n"))
-	}
-	return m
-}
-
-// highlightBlock applies a dark-gray background to all lines of a multi-line string.
-func highlightBlock(s string, width int) string {
-	style := lipgloss.NewStyle().
-		Background(lipgloss.Color("237")).
-		Width(width)
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		lines[i] = style.Render(l)
-	}
-	return strings.Join(lines, "\n")
-}
-
-const bodyIndent = "  "
-
-// renderMessageLine formats a single message for display in the feed.
-// Each message renders as 2–5 lines: a header line then up to 3 indented body
-// lines, plus an overflow indicator when the text exceeds 3 lines.
-// Thread replies include ↩ in the header and may show a parent snippet.
-func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet string, width int) string {
-	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
-
-	var headerLine string
-	if msg.RootID != "" {
-		if snippet != "" {
-			snippet = strings.ReplaceAll(snippet, "\n", " ")
-			headerLine = fmt.Sprintf("[%s] #%s  ↩ @%s  (%s)", ts, channelName, senderName, snippet)
-		} else {
-			headerLine = fmt.Sprintf("[%s] #%s  ↩ @%s", ts, channelName, senderName)
-		}
-	} else {
-		headerLine = fmt.Sprintf("[%s] #%s  @%s", ts, channelName, senderName)
-	}
-
-	// Word-wrap the body, accounting for indent, and cap at 3 visible lines.
-	wrapWidth := width - len([]rune(bodyIndent))
-	if wrapWidth < 20 {
-		wrapWidth = 20
-	}
-	if width <= 0 {
-		wrapWidth = 120
-	}
-	bodyLines := wrapText(msg.Text, wrapWidth)
-
-	overflowStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("238")).
-		Italic(true)
-
-	allLines := []string{headerLine}
-	if len(bodyLines) <= 3 {
-		for _, l := range bodyLines {
-			allLines = append(allLines, bodyIndent+l)
-		}
-	} else {
-		for _, l := range bodyLines[:3] {
-			allLines = append(allLines, bodyIndent+l)
-		}
-		remaining := len(bodyLines) - 3
-		indicator := overflowStyle.Render(fmt.Sprintf("⌄⌄⌄  %d more lines", remaining))
-		allLines = append(allLines, bodyIndent+indicator)
-	}
-
-	return strings.Join(allLines, "\n")
-}
-
-// wrapText splits text into lines of at most width runes, breaking on word boundaries.
-// It also preserves existing newlines in the source text.
-func wrapText(text string, width int) []string {
-	if width <= 0 {
-		return []string{text}
-	}
-	var result []string
-	for _, para := range strings.Split(text, "\n") {
-		words := strings.Fields(para)
-		if len(words) == 0 {
-			continue
-		}
-		var line strings.Builder
-		lineWidth := 0
-		for _, word := range words {
-			wordWidth := len([]rune(word))
-			if lineWidth == 0 {
-				line.WriteString(word)
-				lineWidth = wordWidth
-			} else if lineWidth+1+wordWidth <= width {
-				line.WriteByte(' ')
-				line.WriteString(word)
-				lineWidth += 1 + wordWidth
-			} else {
-				result = append(result, line.String())
-				line.Reset()
-				line.WriteString(word)
-				lineWidth = wordWidth
-			}
-		}
-		if lineWidth > 0 {
-			result = append(result, line.String())
-		}
-	}
-	return result
 }
 
 // StatusMsg returns the current status bar message (for testing).
@@ -1011,17 +814,55 @@ func (m Model) View() string {
 		return m.renderHelp()
 	}
 
-	// strings.Join is used instead of lipgloss.JoinVertical to avoid implicit
-	// width normalization that can interact badly with pre-styled strings.
+	body := m.renderBody()
 	return strings.Join([]string{
 		m.renderHeader(),
 		m.renderDivider(),
-		m.viewport.View(),
+		body,
 		m.renderDivider(),
 		m.renderStatusBar(),
 		m.renderInput(),
 		m.renderDivider(),
 	}, "\n")
+}
+
+// renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
+func (m Model) renderBody() string {
+	channelsPanel := m.channelsView.View()
+	msgsHeader := m.renderMessagesHeader()
+	msgsContent := m.messagesView.View()
+
+	// Build the messages panel: header + viewport content.
+	msgsPanel := msgsHeader + "\n" + msgsContent
+
+	chLines := strings.Split(channelsPanel, "\n")
+	msLines := strings.Split(msgsPanel, "\n")
+
+	divChar := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render("│")
+
+	bodyLines := make([]string, m.feedH)
+	for i := range bodyLines {
+		cl := ""
+		if i < len(chLines) {
+			cl = chLines[i]
+		}
+		ml := ""
+		if i < len(msLines) {
+			ml = msLines[i]
+		}
+		bodyLines[i] = cl + divChar + ml
+	}
+	return strings.Join(bodyLines, "\n")
+}
+
+// renderMessagesHeader renders the header line for the messages panel.
+func (m Model) renderMessagesHeader() string {
+	name := m.channelsView.DisplayNameByID(m.activeChannelID)
+	msgsW := m.width - m.channelsWidth - 1
+	if msgsW < 1 {
+		msgsW = 1
+	}
+	return lipgloss.NewStyle().Bold(true).Width(msgsW).Render(name)
 }
 
 func (m Model) renderHeader() string {
@@ -1064,15 +905,12 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	msg := m.statusMsg
 	if msg == "" {
-		if m.selectedMsgIdx >= 0 && m.selectedMsgIdx < len(m.feedItems) {
-			item := m.feedItems[m.selectedMsgIdx]
-			if item.kind == feedItemKindMessage {
-				msgID := item.msg.post.ID
-				if len(msgID) > 8 {
-					msgID = msgID[:8] + "..."
-				}
-				msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
+		if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
+			msgID := item.msg.post.ID
+			if len(msgID) > 8 {
+				msgID = msgID[:8] + "..."
 			}
+			msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
 		} else {
 			msg = "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
 		}

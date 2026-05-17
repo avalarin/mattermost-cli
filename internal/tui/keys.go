@@ -9,11 +9,12 @@ type KeyMap struct {
 	PageUp        key.Binding
 	PageDown      key.Binding
 	End           key.Binding
-	FocusInput    key.Binding // ctrl+b
-	FocusMessages key.Binding // ctrl+j
-	Send          key.Binding // alt+enter
-	Cancel        key.Binding // esc
-	CtrlC         key.Binding // ctrl+c
+	FocusInput    key.Binding    // ctrl+b
+	FocusMessages key.Binding    // ctrl+j
+	FocusChannels key.Binding    // ctrl+l → ModeChannels
+	Send          key.Binding    // alt+enter
+	Cancel        key.Binding    // esc
+	CtrlC         key.Binding    // ctrl+c
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -48,6 +49,10 @@ func DefaultKeyMap() KeyMap {
 			// Using ctrl+j (keyLF=10) which is distinct and reliably bindable.
 			key.WithKeys("ctrl+j"),
 			key.WithHelp("Ctrl+J", "focus messages"),
+		),
+		FocusChannels: key.NewBinding(
+			key.WithKeys("ctrl+l"),
+			key.WithHelp("Ctrl+L", "focus channels"),
 		),
 		Send: key.NewBinding(
 			key.WithKeys("enter"),
