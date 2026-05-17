@@ -48,7 +48,11 @@ func buildHelpContent(keys KeyMap, registry *Registry, contentWidth int) string 
 	leftLines := []string{
 		" " + headerStyle.Render("Channel Panel"),
 		hline(leftW),
-		"  " + comingSoonStyle.Render("(coming soon)"),
+		keyRow("↑ / ↓", "Navigate channels"),
+		keyRow("Enter", "Open channel"),
+		keyRow("Esc", "Return to input"),
+		keyRow("Ctrl+B ↓", "Return to input"),
+		keyRow("Ctrl+B →", "Focus messages"),
 	}
 
 	rightLines := []string{
@@ -58,7 +62,8 @@ func buildHelpContent(keys KeyMap, registry *Registry, contentWidth int) string 
 		keyRow("PgUp/PgDn", "Page navigation"),
 		keyRow("End", "Jump to bottom"),
 		keyRow("Esc", "Return to input"),
-		keyRow("Ctrl+B", "Return to input"),
+		keyRow("Ctrl+B ↓", "Return to input"),
+		keyRow("Ctrl+B ←", "Focus channels"),
 		keyRow("/", "Start a command"),
 	}
 
@@ -86,6 +91,9 @@ func buildHelpContent(keys KeyMap, registry *Registry, contentWidth int) string 
 		keyRow("Alt/Opt+Enter", "Insert newline"),
 		keyRow("↑  (empty input)", "Go to messages"),
 		keyRow("Ctrl+J", "Go to messages"),
+		keyRow("Ctrl+B ↑", "Go to messages"),
+		keyRow("Ctrl+L", "Go to channels"),
+		keyRow("Ctrl+B ←", "Go to channels"),
 		keyRow("Esc, Esc", "Clear input & deselect"),
 	)
 

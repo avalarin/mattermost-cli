@@ -6,15 +6,17 @@ import "github.com/charmbracelet/bubbles/key"
 type KeyMap struct {
 	Up            key.Binding
 	Down          key.Binding
+	Left          key.Binding
+	Right         key.Binding
 	PageUp        key.Binding
 	PageDown      key.Binding
 	End           key.Binding
-	FocusInput    key.Binding    // ctrl+b
-	FocusMessages key.Binding    // ctrl+j
-	FocusChannels key.Binding    // ctrl+l → ModeChannels
-	Send          key.Binding    // alt+enter
-	Cancel        key.Binding    // esc
-	CtrlC         key.Binding    // ctrl+c
+	Prefix        key.Binding // ctrl+b — activates prefix mode (tmux-style)
+	FocusMessages key.Binding // ctrl+j
+	FocusChannels key.Binding // ctrl+l → ModeChannels
+	Send          key.Binding // enter
+	Cancel        key.Binding // esc
+	CtrlC         key.Binding // ctrl+c
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -28,6 +30,14 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("down"),
 			key.WithHelp("↓", "down"),
 		),
+		Left: key.NewBinding(
+			key.WithKeys("left"),
+			key.WithHelp("←", "left"),
+		),
+		Right: key.NewBinding(
+			key.WithKeys("right"),
+			key.WithHelp("→", "right"),
+		),
 		PageUp: key.NewBinding(
 			key.WithKeys("pgup"),
 			key.WithHelp("PgUp", "page up"),
@@ -40,9 +50,9 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("end"),
 			key.WithHelp("End", "jump to bottom"),
 		),
-		FocusInput: key.NewBinding(
+		Prefix: key.NewBinding(
 			key.WithKeys("ctrl+b"),
-			key.WithHelp("Ctrl+B", "focus input"),
+			key.WithHelp("Ctrl+B", "prefix (then ↑/↓/←/→ to navigate panels)"),
 		),
 		FocusMessages: key.NewBinding(
 			// Note: ctrl+m == enter in standard terminals (keyCR=13).
