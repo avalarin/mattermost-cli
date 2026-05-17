@@ -81,7 +81,7 @@ func main() {
 		}
 	}
 
-	header, status, wsClient, channels, restClient, teamID, channelsWidth, showModeIndicator := loadStartupState(resolvedConfig)
+	header, status, wsClient, channels, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderColor := loadStartupState(resolvedConfig)
 	if wsClient != nil {
 		wsClient.Start(ctx)
 	}
@@ -93,7 +93,7 @@ func main() {
 		statusCh = wsClient.Status()
 	}
 
-	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator)
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderColor)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -105,12 +105,12 @@ func main() {
 // On hard failures (invalid config fields, auth error) it prints to stderr and exits.
 // A missing config file is not a hard failure — the TUI can show a message instead.
 // Returns the header info, status message, WS client, channels, REST client, team ID,
-// channels sidebar width, and whether the mode indicator should be shown.
-func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel, *mattermost.Client, string, int, bool) {
+// channels sidebar width, whether the mode indicator should be shown, and the active header color.
+func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel, *mattermost.Client, string, int, bool, string) {
 	header := tui.HeaderInfo{Status: mattermost.ConnStatusConnecting}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil, nil, "", 22, true
+		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil, nil, "", 22, true, "15"
 	}
 
 	cfg, err := config.Load(path)
@@ -146,5 +146,5 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 	}
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
-	return header, "", wsClient, channels, client, teamID, cfg.UI.ChannelsWidth, cfg.UI.ShowModeIndicator
+	return header, "", wsClient, channels, client, teamID, cfg.UI.ChannelsWidth, cfg.UI.ShowModeIndicator, cfg.Colors.ActiveHeader
 }

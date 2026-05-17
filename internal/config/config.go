@@ -14,6 +14,14 @@ type Config struct {
 	Server ServerConfig
 	AI     AIConfig
 	UI     UIConfig
+	Colors ColorsConfig
+}
+
+// ColorsConfig holds terminal color overrides (256-color ANSI codes or hex RGB).
+type ColorsConfig struct {
+	// ActiveHeader is the foreground color applied to the header of the active panel.
+	// Default "15" (bright white). Set to any ANSI 256-color code or #RRGGBB.
+	ActiveHeader string `toml:"active_header"`
 }
 
 type ServerConfig struct {
@@ -61,6 +69,7 @@ func applyDefaults(cfg *Config) {
 	cfg.UI.Theme = "auto"
 	cfg.UI.ChannelsWidth = 22
 	cfg.UI.ShowModeIndicator = true
+	cfg.Colors.ActiveHeader = "15"
 	cfg.AI.Model = "claude-sonnet-4-6"
 	cfg.AI.Enabled = false
 }

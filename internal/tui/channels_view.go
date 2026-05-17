@@ -23,9 +23,10 @@ type ChannelsView struct {
 	selectedIdx int // cursor position
 	openIdx     int // currently open channel (-1 initially, 0 = All Activity)
 	scrollOff   int // index of first visible item
-	width       int
-	height      int  // total height including header
-	active      bool // true when the channels panel has keyboard focus
+	width           int
+	height          int    // total height including header
+	active          bool   // true when the channels panel has keyboard focus
+	activeHeaderColor string // ANSI color for the header when active
 }
 
 // NewChannelsView creates a ChannelsView with All Activity pinned first,
@@ -201,6 +202,12 @@ func (cv ChannelsView) SetActive(active bool) ChannelsView {
 	return cv
 }
 
+// SetActiveColor sets the ANSI color used for the header when the panel is active.
+func (cv ChannelsView) SetActiveColor(color string) ChannelsView {
+	cv.activeHeaderColor = color
+	return cv
+}
+
 // ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
 func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
 	for i, item := range cv.items {
@@ -271,11 +278,14 @@ func (cv ChannelsView) View() string {
 	// Header line: accent when active (keyboard focus), plain bold otherwise.
 	var headerStyle lipgloss.Style
 	if cv.active {
+		color := cv.activeHeaderColor
+		if color == "" {
+			color = "15"
+		}
 		headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Width(cv.width).
-			Background(lipgloss.Color("25")).
-			Foreground(lipgloss.Color("15"))
+			Foreground(lipgloss.Color(color))
 	} else {
 		headerStyle = lipgloss.NewStyle().Bold(true).Width(cv.width)
 	}

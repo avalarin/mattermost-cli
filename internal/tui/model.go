@@ -80,6 +80,7 @@ type Model struct {
 
 	channelsRaw       []mattermost.Channel // original channel list, used for DM name resolution
 	showModeIndicator bool                 // when true, status bar shows current mode badge
+	activeHeaderColor string               // ANSI color for the active panel header (default "15")
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -104,6 +105,10 @@ func NewModel() Model {
 	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "opt+enter"))
 	// Remove the cursor-line background highlight.
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	// Use a vertical bar as the prompt so it acts as a left focus indicator.
+	ta.Prompt = "│ "
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
 	return Model{
@@ -130,6 +135,7 @@ func NewModelWithHeader(
 	teamID string,
 	channelsWidth int,
 	showModeIndicator bool,
+	activeHeaderColor string,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -143,6 +149,11 @@ func NewModelWithHeader(
 	m.client = client
 	m.teamID = teamID
 	m.showModeIndicator = showModeIndicator
+	if activeHeaderColor != "" {
+		m.activeHeaderColor = activeHeaderColor
+	} else {
+		m.activeHeaderColor = "15"
+	}
 
 	if channelsWidth > 0 {
 		m.channelsWidth = channelsWidth
@@ -352,7 +363,7 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 			if name == "" {
 				name = otherID
 			}
-			names[chID] = "@" + name
+			names[chID] = name
 		}
 		return MsgDMNamesResolved{Names: names}
 	}
@@ -576,10 +587,12 @@ func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.FocusChannels): // ctrl+l → focus channels
 		m.mode = ModeChannels
+		m.input.Blur()
 		return m, nil
 
 	case key.Matches(msg, m.keys.FocusMessages): // ctrl+j → focus messages
 		m.mode = ModeMessages
+		m.input.Blur()
 		m.messagesView = m.messagesView.SelectLast()
 		if m.ready {
 			m.messagesView = m.messagesView.rerenderFeed()
@@ -589,6 +602,7 @@ func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Up): // up from empty input → go to messages
 		if m.input.Value() == "" {
 			m.mode = ModeMessages
+			m.input.Blur()
 			m.messagesView = m.messagesView.SelectLast()
 			if m.ready {
 				m.messagesView = m.messagesView.rerenderFeed()
@@ -899,7 +913,7 @@ func (m Model) View() string {
 
 // renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
 func (m Model) renderBody() string {
-	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).View()
+	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveColor(m.activeHeaderColor).View()
 	msgsHeader := m.renderMessagesHeader()
 	msgsContent := m.messagesView.View()
 
@@ -938,8 +952,7 @@ func (m Model) renderMessagesHeader() string {
 		headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Width(msgsW).
-			Background(lipgloss.Color("25")).
-			Foreground(lipgloss.Color("15"))
+			Foreground(lipgloss.Color(m.activeHeaderColor))
 	} else {
 		headerStyle = lipgloss.NewStyle().Bold(true).Width(msgsW)
 	}
@@ -1006,13 +1019,15 @@ func (m Model) renderStatusBar() string {
 	}
 
 	modeLabels := map[Mode]string{
-		ModeInput:    "[INPUT]",
 		ModeMessages: "[MESSAGES]",
 		ModeChannels: "[CHANNELS]",
 		ModeHelp:     "[HELP]",
 	}
-	badge := modeLabels[m.mode]
-	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("25"))
+	badge, hasBadge := modeLabels[m.mode]
+	if !hasBadge {
+		return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
+	}
+	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.activeHeaderColor))
 	styledBadge := badgeStyle.Render(badge)
 
 	// Reserve space for the badge (plain-text width) so the status message
