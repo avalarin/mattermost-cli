@@ -1,5 +1,16 @@
 package mattermost
 
+// ConnStatus represents the WebSocket connection state shown in the header.
+type ConnStatus string
+
+const (
+	// ConnStatusConnecting is shown while the initial connection is being established.
+	ConnStatusConnecting ConnStatus = "connecting"
+	// ConnStatusConnected is shown when the WebSocket is authenticated and ready.
+	ConnStatusConnected ConnStatus = "connected"
+	// Reconnecting states are formatted as "reconnecting... Xs" and constructed at runtime.
+)
+
 // Team represents a Mattermost team.
 type Team struct {
 	ID   string `json:"id"`

@@ -1,28 +1,24 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-)
 
-// ConnStatus represents the WebSocket connection state shown in the header.
-type ConnStatus string
-
-const (
-	ConnStatusConnecting ConnStatus = "connecting"
-	ConnStatusConnected  ConnStatus = "connected"
+	"github.com/avalarin/mattermost-cli/internal/mattermost"
 )
 
 // HeaderInfo holds the data displayed in the application header.
 type HeaderInfo struct {
 	TeamName string
 	Username string
-	Status   ConnStatus
+	Status   mattermost.ConnStatus
 }
 
 // Mode represents the current input mode of the TUI.
@@ -37,16 +33,22 @@ const (
 
 // Model is the root Bubble Tea model.
 type Model struct {
-	width     int
-	height    int
-	mode      Mode
-	header    HeaderInfo
-	input     textinput.Model
-	viewport  viewport.Model
-	statusMsg string
-	keys      KeyMap
-	styles    Styles
-	ready     bool
+	width      int
+	height     int
+	mode       Mode
+	header     HeaderInfo
+	input      textinput.Model
+	viewport   viewport.Model
+	statusMsg  string
+	keys       KeyMap
+	styles     Styles
+	ready      bool
+	events     <-chan mattermost.Event
+	connStatus <-chan mattermost.ConnStatus
+	channels   map[string]string // channelID -> channelName
+	msgCache   map[string]string // messageID -> text (for parent snippet)
+	feedLines  []string          // rendered message lines
+	atBottom   bool
 }
 
 // NewModel creates a new Model with default settings.
@@ -56,23 +58,73 @@ func NewModel() Model {
 	ti.CharLimit = 500
 
 	return Model{
-		input:  ti,
-		keys:   DefaultKeyMap(),
-		styles: DefaultStyles(),
+		input:    ti,
+		keys:     DefaultKeyMap(),
+		styles:   DefaultStyles(),
+		atBottom: true,
 	}
 }
 
-// NewModelWithHeader creates a Model with pre-loaded header info and initial status.
-func NewModelWithHeader(header HeaderInfo, status string) Model {
+// NewModelWithHeader creates a Model with pre-loaded header info, initial status,
+// and optional WebSocket channels and channel list.
+func NewModelWithHeader(
+	header HeaderInfo,
+	status string,
+	events <-chan mattermost.Event,
+	connStatus <-chan mattermost.ConnStatus,
+	channels []mattermost.Channel,
+) Model {
 	m := NewModel()
 	m.header = header
 	m.statusMsg = status
+	m.events = events
+	m.connStatus = connStatus
+
+	// Build channelID -> channelName lookup map.
+	if len(channels) > 0 {
+		m.channels = make(map[string]string, len(channels))
+		for _, ch := range channels {
+			m.channels[ch.ID] = ch.Name
+		}
+	}
+	m.msgCache = make(map[string]string)
+
 	return m
 }
 
-// Init implements tea.Model.
+// Init implements tea.Model. Starts waiting for the first WS event and status update.
 func (m Model) Init() tea.Cmd {
-	return nil
+	if m.events == nil {
+		return nil
+	}
+	return tea.Batch(
+		waitForEvent(m.events),
+		waitForStatus(m.connStatus),
+	)
+}
+
+// waitForEvent blocks until an event arrives on ch and returns it as a tea.Msg.
+// Returns nil when the channel is closed (ends the subscription).
+func waitForEvent(ch <-chan mattermost.Event) tea.Cmd {
+	return func() tea.Msg {
+		evt, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return evt
+	}
+}
+
+// waitForStatus blocks until a status arrives on ch and returns it wrapped in MsgConnStatus.
+// Returns nil when the channel is closed (ends the subscription).
+func waitForStatus(ch <-chan mattermost.ConnStatus) tea.Cmd {
+	return func() tea.Msg {
+		s, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return MsgConnStatus{Status: s}
+	}
 }
 
 // Update implements tea.Model.
@@ -83,6 +135,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+
+	case mattermost.Event:
+		if msg.Type == mattermost.EventTypePosted {
+			updated, cmd := m.handlePostedEvent(msg)
+			return updated, tea.Batch(cmd, waitForEvent(m.events))
+		}
+		return m, waitForEvent(m.events)
+
+	case MsgConnStatus:
+		m.header.Status = msg.Status
+		return m, waitForStatus(m.connStatus)
 	}
 
 	// Forward other messages to viewport when ready.
@@ -107,7 +170,12 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, feedHeight)
-		m.viewport.SetContent("Waiting for messages...")
+		// Restore any messages that arrived before the first window size event.
+		if len(m.feedLines) > 0 {
+			m.viewport.SetContent(strings.Join(m.feedLines, "\n"))
+		} else {
+			m.viewport.SetContent("Waiting for messages...")
+		}
 		m.ready = true
 	} else {
 		m.viewport.Width = m.width
@@ -137,6 +205,14 @@ func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "To exit, use /quit"
 		return m, nil
 
+	case tea.KeyEnd:
+		// Snap to bottom and re-enable auto-scroll.
+		if m.ready {
+			m.atBottom = true
+			m.viewport.GotoBottom()
+		}
+		return m, nil
+
 	case tea.KeyRunes:
 		if string(msg.Runes) == "/" {
 			m.mode = ModeCommand
@@ -150,8 +226,13 @@ func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// In normal mode, forward scroll keys to viewport.
 	if m.ready {
+		prev := m.viewport.ScrollPercent()
 		var cmd tea.Cmd
 		m.viewport, cmd = m.viewport.Update(msg)
+		// Any upward scroll disables auto-scroll.
+		if m.viewport.ScrollPercent() < prev {
+			m.atBottom = false
+		}
 		return m, cmd
 	}
 
@@ -200,6 +281,74 @@ func (m Model) executeCommand(input string) tea.Cmd {
 	return nil
 }
 
+// handlePostedEvent decodes a posted WS event and appends a rendered line to the feed.
+func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
+	postJSON, ok := evt.Data["post"].(string)
+	if !ok {
+		return m, nil
+	}
+	var post mattermost.Message
+	if err := json.Unmarshal([]byte(postJSON), &post); err != nil {
+		return m, nil
+	}
+
+	senderName := ""
+	if v, ok := evt.Data["sender_name"].(string); ok {
+		senderName = strings.TrimPrefix(v, "@")
+	}
+	if senderName == "" {
+		senderName = post.UserID
+	}
+
+	channelName := post.ChannelID
+	if name, ok := m.channels[post.ChannelID]; ok {
+		channelName = name
+	}
+
+	// Cache the message text so thread replies can show a parent snippet.
+	if m.msgCache == nil {
+		m.msgCache = make(map[string]string)
+	}
+	m.msgCache[post.ID] = post.Text
+
+	line := renderMessageLine(post, senderName, channelName, m.msgCache)
+	m.feedLines = append(m.feedLines, line)
+
+	content := strings.Join(m.feedLines, "\n")
+	m.viewport.SetContent(content)
+
+	if m.atBottom {
+		m.viewport.GotoBottom()
+	}
+
+	return m, nil
+}
+
+// renderMessageLine formats a single message for display in the feed.
+// Thread replies include an arrow prefix and a snippet of the parent message.
+func renderMessageLine(msg mattermost.Message, senderName, channelName string, msgCache map[string]string) string {
+	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
+
+	if msg.RootID != "" {
+		// Thread reply — try to show a snippet of the parent message.
+		snippet := ""
+		if parent, ok := msgCache[msg.RootID]; ok {
+			runes := []rune(parent)
+			if len(runes) > 40 {
+				snippet = string(runes[:40]) + "..."
+			} else {
+				snippet = parent
+			}
+		}
+		if snippet != "" {
+			return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s  ↩ В ответ на: %s", ts, channelName, senderName, msg.Text, snippet)
+		}
+		return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s", ts, channelName, senderName, msg.Text)
+	}
+
+	return fmt.Sprintf("[%s] #%-20s  %s: %s", ts, channelName, senderName, msg.Text)
+}
+
 // StatusMsg returns the current status bar message (for testing).
 func (m Model) StatusMsg() string {
 	return m.statusMsg
@@ -229,7 +378,7 @@ func (m Model) renderHeader() string {
 
 	status := m.header.Status
 	if status == "" {
-		status = ConnStatusConnecting
+		status = mattermost.ConnStatusConnecting
 	}
 	parts = append(parts, fmt.Sprintf("[%s]", status))
 

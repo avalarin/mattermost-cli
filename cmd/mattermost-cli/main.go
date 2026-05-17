@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -48,9 +49,22 @@ func main() {
 		}
 	}
 
-	header, status := loadStartupState(resolvedConfig)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	m := tui.NewModelWithHeader(header, status)
+	header, status, wsClient, channels := loadStartupState(resolvedConfig)
+	if wsClient != nil {
+		wsClient.Start(ctx)
+	}
+
+	var eventsCh <-chan mattermost.Event
+	var statusCh <-chan mattermost.ConnStatus
+	if wsClient != nil {
+		eventsCh = wsClient.Events()
+		statusCh = wsClient.Status()
+	}
+
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -61,11 +75,12 @@ func main() {
 // loadStartupState loads config and authenticates with the Mattermost server.
 // On hard failures (invalid config fields, auth error) it prints to stderr and exits.
 // A missing config file is not a hard failure — the TUI can show a message instead.
-func loadStartupState(path string) (tui.HeaderInfo, string) {
-	header := tui.HeaderInfo{Status: tui.ConnStatusConnecting}
+// Returns the WSClient and channel list; both are nil when no config is available.
+func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel) {
+	header := tui.HeaderInfo{Status: mattermost.ConnStatusConnecting}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return header, "Config file not found. Run with --config path/to/config.toml"
+		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil
 	}
 
 	cfg, err := config.Load(path)
@@ -83,6 +98,7 @@ func loadStartupState(path string) (tui.HeaderInfo, string) {
 	}
 	header.Username = user.Username
 
+	var channels []mattermost.Channel
 	if cfg.Server.Team != "" {
 		team, err := client.GetTeamByName(cfg.Server.Team)
 		if err != nil {
@@ -90,7 +106,14 @@ func loadStartupState(path string) (tui.HeaderInfo, string) {
 			os.Exit(1)
 		}
 		header.TeamName = team.Name
+
+		channels, err = client.GetChannelsForTeam(team.ID)
+		if err != nil {
+			// Non-fatal: we can still show the feed without channel name resolution.
+			slog.Debug("failed to load channels", "err", err)
+		}
 	}
 
-	return header, "Config loaded: server=" + cfg.Server.URL
+	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
+	return header, "Config loaded: server=" + cfg.Server.URL, wsClient, channels
 }

@@ -330,7 +330,7 @@ tui/model.go → Update() → View()
 
 ---
 
-### T6: WebSocket client + сообщения в ленте
+### ✅ T6: WebSocket client + сообщения в ленте
 
 **Что делаем:**
 - `WSClient`: подключение к `wss://<host>/api/v4/websocket`, auth-challenge фрейм
