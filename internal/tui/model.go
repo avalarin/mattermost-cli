@@ -34,8 +34,10 @@ const (
 	ModeMessages
 )
 
-// inputHeight is the number of rows the textarea occupies.
-const inputHeight = 3
+const (
+	minInputHeight = 1
+	maxInputHeight = 8
+)
 
 // feedMessage stores raw message data for re-rendering on resize.
 type feedMessage struct {
@@ -91,11 +93,14 @@ type Model struct {
 // NewModel creates a new Model with default settings.
 func NewModel() Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message, or / for commands (Alt+Enter to send)..."
+	ta.Placeholder = "Type a message, or / for commands (Enter to send)..."
 	ta.ShowLineNumbers = false
-	ta.SetHeight(inputHeight)
+	ta.SetHeight(minInputHeight)
 	ta.CharLimit = 4000
-	// ta.KeyMap.InsertNewline keeps its default (Enter inserts newline).
+	// Remap InsertNewline from Enter to Alt+Enter so Enter can be used to send.
+	ta.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter"))
+	// Remove the cursor-line background highlight.
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
 	return Model{
@@ -381,15 +386,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
+	m.input.SetWidth(m.width)
 
-	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(inputHeight) + divider(1)
-	// Fixed rows: 5 (header, 2 dividers, statusbar, bottom divider) + inputHeight
-	feedHeight := m.height - 5 - inputHeight
+	// Input height is dynamic (1–8 lines); recompute after width change (which may reflow lines).
+	inputH := m.input.LineCount()
+	if inputH < minInputHeight {
+		inputH = minInputHeight
+	}
+	if inputH > maxInputHeight {
+		inputH = maxInputHeight
+	}
+	m.input.SetHeight(inputH)
+
+	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(inputH) + divider(1)
+	feedHeight := m.height - 5 - inputH
 	if feedHeight < 0 {
 		feedHeight = 0
 	}
-
-	m.input.SetWidth(m.width)
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, feedHeight)
@@ -404,6 +417,41 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// syncInputHeight adjusts the textarea display height and the viewport height to match
+// the current textarea content (clamped to minInputHeight–maxInputHeight lines).
+// Must be called after any operation that may change the textarea content line count.
+func (m Model) syncInputHeight() Model {
+	lines := m.input.LineCount()
+	if lines < minInputHeight {
+		lines = minInputHeight
+	}
+	if lines > maxInputHeight {
+		lines = maxInputHeight
+	}
+	m.input.SetHeight(lines)
+	if m.ready && m.height > 0 {
+		feedHeight := m.height - 5 - lines
+		if feedHeight < 0 {
+			feedHeight = 0
+		}
+		m.viewport.Height = feedHeight
+	}
+	return m
+}
+
+// pageSize returns the number of messages to skip per PageUp/PageDown in ModeMessages.
+// Approximates how many messages fit on screen (viewport height / ~3 lines per message).
+func (m Model) pageSize() int {
+	n := m.viewport.Height / 3
+	if n < 1 {
+		n = 1
+	}
+	if n > 20 {
+		n = 20
+	}
+	return n
+}
+
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case ModeInput:
@@ -416,11 +464,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, m.keys.Send): // alt+enter → send/execute
+	case key.Matches(msg, m.keys.Send): // enter → send/execute
 		return m.executeCommand(m.input.Value())
 
 	case key.Matches(msg, m.keys.CtrlC): // ctrl+c → clear input + deselect
 		m.input.Reset()
+		m = m.syncInputHeight()
 		m.selectedMsgIdx = -1
 		m.escPending = false
 		m.statusMsg = ""
@@ -453,18 +502,10 @@ func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// non-empty input: fall through to textarea
 	}
 
-	// Enter without alt: textarea will insert newline; show a hint.
-	if msg.Type == tea.KeyEnter {
-		var inputCmd tea.Cmd
-		m.input, inputCmd = m.input.Update(msg)
-		m.statusGen++
-		m.statusMsg = "Press Alt+Enter to send"
-		m.statusIsError = false
-		return m, tea.Batch(inputCmd, clearStatusAfter(2*time.Second, m.statusGen))
-	}
-
+	// All other keys (including alt+enter which inserts a newline via textarea.KeyMap.InsertNewline).
 	var inputCmd tea.Cmd
 	m.input, inputCmd = m.input.Update(msg)
+	m = m.syncInputHeight()
 	return m, inputCmd
 }
 
@@ -518,15 +559,24 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.PageUp):
 		m.atBottom = false
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
+		n := m.pageSize()
+		for i := 0; i < n; i++ {
+			m = m.moveCursorUp()
+		}
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
 
 	case key.Matches(msg, m.keys.PageDown):
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		m.atBottom = m.viewport.AtBottom()
-		return m, cmd
+		n := m.pageSize()
+		for i := 0; i < n; i++ {
+			m = m.moveCursorDown()
+		}
+		if m.ready {
+			m = m.rerenderFeed()
+		}
+		return m, nil
 	}
 
 	// Typing "/" from messages: insert into input and go to input mode.
@@ -555,8 +605,9 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // Second press (within 3s): clear input and deselect message.
 func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 	if m.escPending {
-		// Second esc: clear input and deselect.
+		// Second esc: clear input, deselect, and scroll to bottom.
 		m.input.Reset()
+		m = m.syncInputHeight()
 		m.selectedMsgIdx = -1
 		m.escPending = false
 		m.escGen++
@@ -564,6 +615,8 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.statusIsError = false
 		if m.ready {
 			m = m.rerenderFeed()
+			m.atBottom = true
+			m.viewport.GotoBottom()
 		}
 		return m, nil
 	}
@@ -648,6 +701,7 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 
 	// Reset textarea and go to input mode.
 	m.input.Reset()
+	m = m.syncInputHeight()
 	m.mode = ModeInput
 
 	if m.registry == nil {
@@ -964,7 +1018,7 @@ func (m Model) renderStatusBar() string {
 				msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
 			}
 		} else {
-			msg = "Alt+Enter to send · /send #channel · /send @user · /quit to exit"
+			msg = "Enter to send · Alt+Enter for newline · /send #channel · /quit to exit"
 		}
 	}
 	color := lipgloss.Color("241")

@@ -47,8 +47,8 @@ func TestQuitCommandExits(t *testing.T) {
 		m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 
-	// Press Alt+Enter to execute the command.
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	// Press Enter to execute the command.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	if cmd == nil {
 		t.Fatal("expected quit cmd, got nil")
@@ -196,17 +196,22 @@ func TestEmptyInputUpGoesToMessages(t *testing.T) {
 	}
 }
 
-// TestEnterInInputShowsHint: Enter in ModeInput inserts newline and shows hint.
-func TestEnterInInputShowsHint(t *testing.T) {
+// TestAltEnterInsertsNewline: Alt+Enter in ModeInput inserts a newline into the textarea.
+func TestAltEnterInsertsNewline(t *testing.T) {
 	m := NewModel()
 	m = initModel(t, m)
 
-	// Press Enter (no alt).
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = mustModel(t, updated)
+	// Type some text first so the textarea has content.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 
-	if !strings.Contains(m.StatusMsg(), "Alt+Enter") {
-		t.Errorf("expected hint about Alt+Enter in status, got: %q", m.StatusMsg())
+	linesBefore := m.input.LineCount()
+
+	// Press Alt+Enter to insert a newline.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+
+	if m.input.LineCount() <= linesBefore {
+		t.Errorf("expected LineCount to increase after Alt+Enter, was %d now %d", linesBefore, m.input.LineCount())
 	}
 }
 
@@ -357,9 +362,9 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 	const width, height = 100, 30
 	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height}); return updated }())
 
-	// Layout: header(1) + divider(1) + feed + divider(1) + statusbar(1) + input(inputHeight=3) + divider(1)
-	// feedHeight = height - 5 - inputHeight
-	wantFeedHeight := height - 5 - inputHeight
+	// Layout: header(1) + divider(1) + feed + divider(1) + statusbar(1) + input(minInputHeight=1) + divider(1)
+	// feedHeight = height - 5 - minInputHeight (empty textarea starts at 1 line)
+	wantFeedHeight := height - 5 - minInputHeight
 	if m.viewport.Height != wantFeedHeight {
 		t.Errorf("expected viewport height %d, got %d", wantFeedHeight, m.viewport.Height)
 	}
@@ -371,7 +376,7 @@ func TestLayoutHeightFitsWindow(t *testing.T) {
 	const width2, height2 = 120, 40
 	m = mustModel(t, func() tea.Model { updated, _ := m.Update(tea.WindowSizeMsg{Width: width2, Height: height2}); return updated }())
 
-	wantFeedHeight2 := height2 - 5 - inputHeight
+	wantFeedHeight2 := height2 - 5 - minInputHeight
 	if m.viewport.Height != wantFeedHeight2 {
 		t.Errorf("after resize: expected viewport height %d, got %d", wantFeedHeight2, m.viewport.Height)
 	}

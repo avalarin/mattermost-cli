@@ -50,8 +50,8 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("Ctrl+J", "focus messages"),
 		),
 		Send: key.NewBinding(
-			key.WithKeys("alt+enter"),
-			key.WithHelp("Alt+Enter", "send/execute"),
+			key.WithKeys("enter"),
+			key.WithHelp("Enter", "send/execute"),
 		),
 		Cancel: key.NewBinding(
 			key.WithKeys("esc"),
