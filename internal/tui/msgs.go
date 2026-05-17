@@ -67,6 +67,7 @@ type MsgChannelHistory struct {
 	Messages  []mattermost.Message
 	Prepend   bool
 	Err       error
+	UserNames map[string]string // userID → resolved username; nil if resolution failed
 }
 
 // MsgChannelHistoryLoading signals that history is being fetched for a channel.

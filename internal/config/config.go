@@ -39,6 +39,7 @@ type AIConfig struct {
 
 type UIConfig struct {
 	DateFormat        string `toml:"date_format"`
+	FullDateFormat    string `toml:"full_date_format"`
 	MessageLimit      int    `toml:"message_limit"`
 	Theme             string `toml:"theme"`
 	ChannelsWidth     int    `toml:"channels_width"`
@@ -66,6 +67,7 @@ func Load(path string) (*Config, error) {
 
 func applyDefaults(cfg *Config) {
 	cfg.UI.DateFormat = "15:04"
+	cfg.UI.FullDateFormat = "02.01.2006"
 	cfg.UI.MessageLimit = 100
 	cfg.UI.Theme = "auto"
 	cfg.UI.ChannelsWidth = 22

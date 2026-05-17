@@ -78,10 +78,12 @@ type Model struct {
 	channelsWidth   int    // from config, default 22
 	feedH           int    // cached body height, updated in handleWindowSize/syncInputHeight
 
-	channelsRaw       []mattermost.Channel // original channel list, used for DM name resolution
-	showModeIndicator bool                 // when true, status bar shows current mode badge
-	activeHeaderFg    string               // foreground color for the active panel header
-	activeHeaderBg    string               // background color for the active panel header
+	channelsRaw       []mattermost.Channel    // original channel list, used for DM name resolution
+	channelTypes      map[string]string       // channelID → type ("O","P","D","G")
+	showModeIndicator bool                    // when true, status bar shows current mode badge
+	activeHeaderFg    string                  // foreground color for the active panel header
+	activeHeaderBg    string                  // background color for the active panel header
+	fullDateFormat    string                  // Go time layout for dates outside today
 
 	activePage     map[string]int // channelID → next page to load (for infinite scroll)
 	historyLoading bool           // true while a channel history fetch is in flight
@@ -128,7 +130,8 @@ func NewModel() Model {
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
 // WebSocket channels, channel list, store, REST client, team ID, channels sidebar width,
-// and whether to display the mode indicator in the status bar.
+// whether to display the mode indicator in the status bar, and the full-date format
+// used for messages not sent today (Go time layout, e.g. "02.01.2006").
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -142,6 +145,7 @@ func NewModelWithHeader(
 	showModeIndicator bool,
 	activeHeaderFg string,
 	activeHeaderBg string,
+	fullDateFormat string,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -165,6 +169,11 @@ func NewModelWithHeader(
 	} else {
 		m.activeHeaderBg = "237"
 	}
+	if fullDateFormat != "" {
+		m.fullDateFormat = fullDateFormat
+	} else {
+		m.fullDateFormat = "02.01.2006"
+	}
 
 	if channelsWidth > 0 {
 		m.channelsWidth = channelsWidth
@@ -172,14 +181,16 @@ func NewModelWithHeader(
 
 	if len(channels) > 0 {
 		m.channels = make(map[string]string, len(channels))
+		m.channelTypes = make(map[string]string, len(channels))
 		for _, ch := range channels {
 			m.channels[ch.ID] = ch.Name
+			m.channelTypes[ch.ID] = ch.Type
 		}
 	}
 
 	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
-	m.messagesView = NewMessagesView(st)
+	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat)
 	m.registry = buildRegistry(client, teamID)
 
 	return m
@@ -288,7 +299,8 @@ func clearStatusAfter(d time.Duration, gen int) tea.Cmd {
 	}
 }
 
-// loadChannelHistoryCmd returns a tea.Cmd that fetches channel history from REST.
+// loadChannelHistoryCmd returns a tea.Cmd that fetches channel history from REST
+// and batch-resolves the author usernames in a single extra API call.
 // prepend=true is used for infinite scroll (older messages prepended at the top).
 func loadChannelHistoryCmd(client *mattermost.Client, channelID string, page int, prepend bool) tea.Cmd {
 	return func() tea.Msg {
@@ -300,11 +312,32 @@ func loadChannelHistoryCmd(client *mattermost.Client, channelID string, page int
 			}
 		}
 		msgs, err := client.GetChannelPosts(channelID, page, 100)
+		if err != nil {
+			return MsgChannelHistory{ChannelID: channelID, Prepend: prepend, Err: err}
+		}
+		// Batch-resolve unique user IDs to display usernames.
+		seen := make(map[string]bool, len(msgs))
+		var ids []string
+		for _, m := range msgs {
+			if !seen[m.UserID] {
+				seen[m.UserID] = true
+				ids = append(ids, m.UserID)
+			}
+		}
+		var userNames map[string]string
+		if len(ids) > 0 {
+			if users, uerr := client.GetUsersByIDs(ids); uerr == nil {
+				userNames = make(map[string]string, len(users))
+				for id, u := range users {
+					userNames[id] = u.Username
+				}
+			}
+		}
 		return MsgChannelHistory{
 			ChannelID: channelID,
 			Messages:  msgs,
 			Prepend:   prepend,
-			Err:       err,
+			UserNames: userNames,
 		}
 	}
 }
@@ -437,6 +470,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		items := make([]feedItem, 0, len(msg.Messages))
 		for _, sm := range msg.Messages {
+			isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
 			items = append(items, feedItem{
 				kind: feedItemKindMessage,
 				msg: feedMessage{
@@ -450,6 +484,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					},
 					senderName:  sm.SenderName,
 					channelName: sm.ChannelName,
+					isDM:        isDM,
 				},
 			})
 		}
@@ -532,23 +567,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Channel switched while loading; discard stale result.
 			return m, nil
 		}
-		// Convert REST messages to store messages.
+		isDM := m.channelTypes[msg.ChannelID] == "D" || m.channelTypes[msg.ChannelID] == "G"
+		// Convert REST messages to store messages, using resolved usernames when available.
 		storeMessages := make([]store.Message, 0, len(msg.Messages))
 		for _, p := range msg.Messages {
-			sm := store.Message{
+			name := msg.UserNames[p.UserID]
+			if name == "" {
+				name = p.UserID
+			}
+			chName := m.channels[p.ChannelID]
+			if chName == "" {
+				chName = p.ChannelID
+			}
+			storeMessages = append(storeMessages, store.Message{
 				ID:          p.ID,
 				ChannelID:   p.ChannelID,
 				UserID:      p.UserID,
 				Text:        p.Text,
 				CreateAt:    p.CreateAt,
 				RootID:      p.RootID,
-				SenderName:  p.UserID, // username resolution not available via REST history in T2
-				ChannelName: m.channels[p.ChannelID],
-			}
-			if sm.ChannelName == "" {
-				sm.ChannelName = p.ChannelID
-			}
-			storeMessages = append(storeMessages, sm)
+				SenderName:  name,
+				ChannelName: chName,
+			})
 		}
 		if m.store != nil {
 			m.store.AddChannelMessages(msg.ChannelID, storeMessages, msg.Prepend)
@@ -581,6 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					},
 					senderName:  sm.SenderName,
 					channelName: sm.ChannelName,
+					isDM:        isDM,
 				},
 			})
 		}
@@ -1035,6 +1076,7 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		m.store.AddChannelMessages(post.ChannelID, []store.Message{sm}, false)
 	}
 
+	isDM := m.channelTypes[post.ChannelID] == "D" || m.channelTypes[post.ChannelID] == "G"
 	// Only add to messages view if: All Activity OR message is in active channel.
 	if m.activeChannelID == "" || post.ChannelID == m.activeChannelID {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{
@@ -1043,6 +1085,7 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 				post:        post,
 				senderName:  senderName,
 				channelName: channelName,
+				isDM:        isDM,
 			},
 		})
 	}
