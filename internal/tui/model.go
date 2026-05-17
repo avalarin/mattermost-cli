@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -31,36 +32,47 @@ const (
 	ModeCommand
 )
 
+// feedMessage stores raw message data for re-rendering on resize.
+type feedMessage struct {
+	post        mattermost.Message
+	senderName  string
+	channelName string
+}
+
 // Model is the root Bubble Tea model.
 type Model struct {
-	width      int
-	height     int
-	mode       Mode
-	header     HeaderInfo
-	input      textinput.Model
-	viewport   viewport.Model
-	statusMsg  string
-	keys       KeyMap
-	styles     Styles
-	ready      bool
-	events     <-chan mattermost.Event
-	connStatus <-chan mattermost.ConnStatus
-	channels   map[string]string // channelID -> channelName
-	store      *store.Store
-	atBottom   bool
+	width         int
+	height        int
+	mode          Mode
+	header        HeaderInfo
+	input         textinput.Model
+	viewport      viewport.Model
+	statusMsg     string
+	statusIsError bool
+	keys          KeyMap
+	styles        Styles
+	ready         bool
+	events        <-chan mattermost.Event
+	connStatus    <-chan mattermost.ConnStatus
+	channels      map[string]string // channelID -> channelName
+	store         *store.Store
+	feedMessages  []feedMessage
+	atBottom      bool
 }
 
 // NewModel creates a new Model with default settings.
 func NewModel() Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type / for commands..."
+	ti.Prompt = "❯ "
 	ti.CharLimit = 500
 
 	return Model{
-		input:    ti,
-		keys:     DefaultKeyMap(),
-		styles:   DefaultStyles(),
-		atBottom: true,
+		input:     ti,
+		keys:      DefaultKeyMap(),
+		styles:    DefaultStyles(),
+		atBottom:  true,
+		statusMsg: "Use /send #channel <text> to post · /send @user <text> for DMs · /quit to exit",
 	}
 }
 
@@ -76,7 +88,10 @@ func NewModelWithHeader(
 ) Model {
 	m := NewModel()
 	m.header = header
-	m.statusMsg = status
+	if status != "" {
+		m.statusMsg = status
+		m.statusIsError = true
+	}
 	m.events = events
 	m.connStatus = connStatus
 	m.store = st
@@ -131,8 +146,8 @@ func waitForStatus(ch <-chan mattermost.ConnStatus) tea.Cmd {
 // loadHistory is a one-shot tea.Cmd that loads startup history from the store.
 func loadHistory(s *store.Store) tea.Cmd {
 	return func() tea.Msg {
-		lines, err := s.LoadRecent(100)
-		return MsgHistoryLoaded{Lines: lines, Err: err}
+		msgs, err := s.LoadRecent(100)
+		return MsgHistoryLoaded{Messages: msgs, Err: err}
 	}
 }
 
@@ -159,13 +174,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MsgHistoryLoaded:
 		if msg.Err != nil {
 			m.statusMsg = "Failed to load history: " + msg.Err.Error()
+			m.statusIsError = true
 			return m, nil
 		}
+		for _, sm := range msg.Messages {
+			m.feedMessages = append(m.feedMessages, feedMessage{
+				post: mattermost.Message{
+					ID:        sm.ID,
+					ChannelID: sm.ChannelID,
+					UserID:    sm.UserID,
+					Text:      sm.Text,
+					CreateAt:  sm.CreateAt,
+					RootID:    sm.RootID,
+				},
+				senderName:  sm.SenderName,
+				channelName: sm.ChannelName,
+			})
+		}
 		if m.ready {
-			lines := m.store.GetLines()
-			if len(lines) > 0 {
-				m.viewport.SetContent(strings.Join(lines, "\n"))
-			}
+			m = m.rerenderFeed()
 			if m.atBottom {
 				m.viewport.GotoBottom()
 			}
@@ -187,27 +214,20 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.width = msg.Width
 	m.height = msg.Height
 
-	// Layout: header(1) + feed(fills) + statusbar(1) + input(1)
-	feedHeight := m.height - 3
+	// Layout: header(1) + divider(1) + feed(fills) + divider(1) + statusbar(1) + input(1) + divider(1)
+	feedHeight := m.height - 6
 	if feedHeight < 0 {
 		feedHeight = 0
 	}
 
 	if !m.ready {
 		m.viewport = viewport.New(m.width, feedHeight)
-		if m.store != nil {
-			if lines := m.store.GetLines(); len(lines) > 0 {
-				m.viewport.SetContent(strings.Join(lines, "\n"))
-			} else {
-				m.viewport.SetContent("Waiting for messages...")
-			}
-		} else {
-			m.viewport.SetContent("Waiting for messages...")
-		}
+		m = m.rerenderFeed()
 		m.ready = true
 	} else {
 		m.viewport.Width = m.width
 		m.viewport.Height = feedHeight
+		m = m.rerenderFeed()
 	}
 
 	return m, nil
@@ -231,6 +251,7 @@ func (m Model) handleKeyNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusMsg = "To exit, use /quit"
+		m.statusIsError = false
 		return m, nil
 
 	case tea.KeyEnd:
@@ -279,15 +300,12 @@ func (m Model) handleKeyCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusMsg = "To exit, use /quit"
+		m.statusIsError = false
 		m.mode = ModeNormal
 		return m, nil
 
 	case tea.KeyEnter:
-		cmd := m.executeCommand(m.input.Value())
-		if cmd != nil {
-			return m, cmd
-		}
-		return m, nil
+		return m.executeCommand(m.input.Value())
 	}
 
 	var inputCmd tea.Cmd
@@ -295,15 +313,22 @@ func (m Model) handleKeyCommand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, inputCmd
 }
 
-func (m Model) executeCommand(input string) tea.Cmd {
+func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(input)
 	if text == "/quit" {
-		return tea.Quit
+		return m, tea.Quit
 	}
-	return nil
+	// Unknown command — show error in status bar.
+	m.statusMsg = fmt.Sprintf("Unknown command: %s", text)
+	m.statusIsError = true
+	m.input.SetValue("")
+	m.input.Blur()
+	m.mode = ModeNormal
+	return m, nil
 }
 
-// handlePostedEvent decodes a posted WS event and updates the feed via the store.
+// handlePostedEvent decodes a posted WS event, persists it via the store,
+// and appends it to the feed for display.
 func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	postJSON, ok := evt.Data["post"].(string)
 	if !ok {
@@ -327,29 +352,140 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		channelName = name
 	}
 
-	if m.store == nil {
-		return m, nil
+	if m.store != nil {
+		m.store.AddMessage(store.Message{
+			ID:          post.ID,
+			ChannelID:   post.ChannelID,
+			UserID:      post.UserID,
+			Text:        post.Text,
+			CreateAt:    post.CreateAt,
+			RootID:      post.RootID,
+			SenderName:  senderName,
+			ChannelName: channelName,
+		})
 	}
 
-	m.store.AddMessage(store.Message{
-		ID:          post.ID,
-		ChannelID:   post.ChannelID,
-		UserID:      post.UserID,
-		Text:        post.Text,
-		CreateAt:    post.CreateAt,
-		RootID:      post.RootID,
-		SenderName:  senderName,
-		ChannelName: channelName,
+	m.feedMessages = append(m.feedMessages, feedMessage{
+		post:        post,
+		senderName:  senderName,
+		channelName: channelName,
 	})
 
-	if m.ready {
-		m.viewport.SetContent(strings.Join(m.store.GetLines(), "\n"))
-		if m.atBottom {
-			m.viewport.GotoBottom()
-		}
+	m = m.rerenderFeed()
+
+	if m.atBottom {
+		m.viewport.GotoBottom()
 	}
 
 	return m, nil
+}
+
+// rerenderFeed rebuilds the viewport content from stored messages at the current width.
+// Parent snippets are looked up from the store; messages re-wrap on resize.
+func (m Model) rerenderFeed() Model {
+	if len(m.feedMessages) == 0 {
+		m.viewport.SetContent("Waiting for messages...")
+		return m
+	}
+	parts := make([]string, 0, len(m.feedMessages))
+	for _, fm := range m.feedMessages {
+		snippet := ""
+		if fm.post.RootID != "" && m.store != nil {
+			snippet = m.store.GetParentSnippet(fm.post.RootID)
+		}
+		parts = append(parts, renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, m.width))
+	}
+	m.viewport.SetContent(strings.Join(parts, "\n"))
+	return m
+}
+
+const bodyIndent = "  "
+
+// renderMessageLine formats a single message for display in the feed.
+// Each message renders as 2–5 lines: a header line then up to 3 indented body
+// lines, plus an overflow indicator when the text exceeds 3 lines.
+// Thread replies include ↩ in the header and may show a parent snippet.
+func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet string, width int) string {
+	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
+
+	var headerLine string
+	if msg.RootID != "" {
+		if snippet != "" {
+			snippet = strings.ReplaceAll(snippet, "\n", " ")
+			headerLine = fmt.Sprintf("[%s] #%s  ↩ @%s  (%s)", ts, channelName, senderName, snippet)
+		} else {
+			headerLine = fmt.Sprintf("[%s] #%s  ↩ @%s", ts, channelName, senderName)
+		}
+	} else {
+		headerLine = fmt.Sprintf("[%s] #%s  @%s", ts, channelName, senderName)
+	}
+
+	// Word-wrap the body, accounting for indent, and cap at 3 visible lines.
+	wrapWidth := width - len([]rune(bodyIndent))
+	if wrapWidth < 20 {
+		wrapWidth = 20
+	}
+	if width <= 0 {
+		wrapWidth = 120
+	}
+	bodyLines := wrapText(msg.Text, wrapWidth)
+
+	overflowStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("238")).
+		Italic(true)
+
+	allLines := []string{headerLine}
+	if len(bodyLines) <= 3 {
+		for _, l := range bodyLines {
+			allLines = append(allLines, bodyIndent+l)
+		}
+	} else {
+		for _, l := range bodyLines[:3] {
+			allLines = append(allLines, bodyIndent+l)
+		}
+		remaining := len(bodyLines) - 3
+		indicator := overflowStyle.Render(fmt.Sprintf("⌄⌄⌄  %d more lines", remaining))
+		allLines = append(allLines, bodyIndent+indicator)
+	}
+
+	return strings.Join(allLines, "\n")
+}
+
+// wrapText splits text into lines of at most width runes, breaking on word boundaries.
+// It also preserves existing newlines in the source text.
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	var result []string
+	for _, para := range strings.Split(text, "\n") {
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			continue
+		}
+		var line strings.Builder
+		lineWidth := 0
+		for _, word := range words {
+			wordWidth := len([]rune(word))
+			if lineWidth == 0 {
+				line.WriteString(word)
+				lineWidth = wordWidth
+			} else if lineWidth+1+wordWidth <= width {
+				line.WriteByte(' ')
+				line.WriteString(word)
+				lineWidth += 1 + wordWidth
+			} else {
+				result = append(result, line.String())
+				line.Reset()
+				line.WriteString(word)
+				lineWidth = wordWidth
+			}
+		}
+		if lineWidth > 0 {
+			result = append(result, line.String())
+		}
+	}
+	return result
 }
 
 // StatusMsg returns the current status bar message (for testing).
@@ -363,47 +499,69 @@ func (m Model) View() string {
 		return "Initializing..."
 	}
 
-	header := m.renderHeader()
-	feed := m.viewport.View()
-	statusBar := m.renderStatusBar()
-	inputLine := m.renderInput()
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		feed,
-		statusBar,
-		inputLine,
-	)
+	// strings.Join is used instead of lipgloss.JoinVertical to avoid implicit
+	// width normalization that can interact badly with pre-styled strings.
+	return strings.Join([]string{
+		m.renderHeader(),
+		m.renderDivider(),
+		m.viewport.View(),
+		m.renderDivider(),
+		m.renderStatusBar(),
+		m.renderInput(),
+		m.renderDivider(),
+	}, "\n")
 }
 
 func (m Model) renderHeader() string {
-	parts := []string{"mattermost-cli"}
-
-	status := m.header.Status
-	if status == "" {
-		status = mattermost.ConnStatusConnecting
+	isConnected := m.header.Status == mattermost.ConnStatusConnected || m.header.Status == ""
+	dotColor := lipgloss.Color("10") // bright green
+	if !isConnected {
+		dotColor = lipgloss.Color("11") // bright yellow
 	}
-	parts = append(parts, fmt.Sprintf("[%s]", status))
 
-	if m.header.TeamName != "" {
-		parts = append(parts, "team: "+m.header.TeamName)
-	}
+	styledDot := lipgloss.NewStyle().Foreground(dotColor).Render("●")
+	styledApp := lipgloss.NewStyle().Bold(true).Render(" mattermost")
+
+	rightPlain := ""
+	styledRight := ""
 	if m.header.Username != "" {
-		parts = append(parts, "@"+m.header.Username)
+		rightPlain = "@" + m.header.Username
+		styledRight = lipgloss.NewStyle().Foreground(lipgloss.Color("247")).Render(rightPlain)
 	}
 
-	style := lipgloss.NewStyle().
-		Bold(true).
-		Width(m.width).
-		Foreground(lipgloss.Color("205"))
-	return style.Render(strings.Join(parts, "  "))
+	if m.width <= 0 {
+		return styledDot + styledApp + "  " + styledRight
+	}
+
+	// Compute gap from plain-text rune widths to avoid ANSI miscounting.
+	leftPlain := "● mattermost"
+	gap := m.width - len([]rune(leftPlain)) - len([]rune(rightPlain))
+	if gap < 1 {
+		gap = 1
+	}
+	return styledDot + styledApp + strings.Repeat(" ", gap) + styledRight
+}
+
+func (m Model) renderDivider() string {
+	if m.width <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Render(strings.Repeat("─", m.width))
 }
 
 func (m Model) renderStatusBar() string {
-	style := lipgloss.NewStyle().
+	msg := m.statusMsg
+	if msg == "" {
+		msg = "Use /send #channel <text> to post · /send @user <text> for DMs · /quit to exit"
+	}
+	color := lipgloss.Color("241") // default: gray
+	if m.statusIsError {
+		color = lipgloss.Color("203") // light red
+	}
+	return lipgloss.NewStyle().
 		Width(m.width).
-		Foreground(lipgloss.Color("241"))
-	return style.Render(m.statusMsg)
+		Foreground(color).
+		Render(msg)
 }
 
 func (m Model) renderInput() string {

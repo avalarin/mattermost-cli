@@ -142,5 +142,5 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 	}
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
-	return header, "Config loaded: server=" + cfg.Server.URL, wsClient, channels
+	return header, "", wsClient, channels
 }

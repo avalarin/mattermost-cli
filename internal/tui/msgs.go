@@ -1,6 +1,9 @@
 package tui
 
-import "github.com/avalarin/mattermost-cli/internal/mattermost"
+import (
+	"github.com/avalarin/mattermost-cli/internal/mattermost"
+	"github.com/avalarin/mattermost-cli/internal/store"
+)
 
 // MsgConnStatus carries a WebSocket connection status update.
 type MsgConnStatus struct {
@@ -24,8 +27,8 @@ type MsgNewMessage struct {
 }
 
 // MsgHistoryLoaded signals completion of the startup history load.
-// Lines contains the pre-rendered display strings in chronological order.
+// Messages contains the raw store messages in chronological order.
 type MsgHistoryLoaded struct {
-	Lines []string
-	Err   error
+	Messages []store.Message
+	Err      error
 }

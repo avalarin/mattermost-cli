@@ -24,18 +24,16 @@ type Message struct {
 
 // Store holds an in-memory message list (capped at 1000) backed by SQLite.
 type Store struct {
-	mu            sync.Mutex
-	db            *DB
-	messages      []Message
-	renderedLines []string
+	mu       sync.Mutex
+	db       *DB
+	messages []Message
 }
 
 // NewStore creates a new Store backed by the given DB.
 func NewStore(db *DB) *Store {
 	return &Store{
-		db:            db,
-		messages:      make([]Message, 0, messageCap),
-		renderedLines: make([]string, 0, messageCap),
+		db:       db,
+		messages: make([]Message, 0, messageCap),
 	}
 }
 
@@ -49,10 +47,8 @@ func (s *Store) AddMessage(msg Message) string {
 
 	if len(s.messages) >= messageCap {
 		s.messages = s.messages[1:]
-		s.renderedLines = s.renderedLines[1:]
 	}
 	s.messages = append(s.messages, msg)
-	s.renderedLines = append(s.renderedLines, line)
 
 	if s.db != nil {
 		// Best-effort: DB write errors are not fatal for live display.
@@ -87,18 +83,9 @@ func (s *Store) getParentSnippetLocked(rootID string) string {
 	return ""
 }
 
-// GetLines returns a copy of all rendered display lines in order.
-func (s *Store) GetLines() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]string, len(s.renderedLines))
-	copy(out, s.renderedLines)
-	return out
-}
-
 // LoadRecent loads up to limit recent messages from the database into the in-memory
-// store and returns their rendered display lines. Intended for startup history load.
-func (s *Store) LoadRecent(limit int) ([]string, error) {
+// store and returns them as raw Message values. Intended for startup history load.
+func (s *Store) LoadRecent(limit int) ([]Message, error) {
 	if s.db == nil {
 		return nil, nil
 	}
@@ -110,19 +97,13 @@ func (s *Store) LoadRecent(limit int) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	lines := make([]string, 0, len(msgs))
 	for _, msg := range msgs {
-		snippet := s.getParentSnippetLocked(msg.RootID)
-		line := renderMessage(msg, snippet)
 		if len(s.messages) >= messageCap {
 			s.messages = s.messages[1:]
-			s.renderedLines = s.renderedLines[1:]
 		}
 		s.messages = append(s.messages, msg)
-		s.renderedLines = append(s.renderedLines, line)
-		lines = append(lines, line)
 	}
-	return lines, nil
+	return msgs, nil
 }
 
 func truncate(s string, max int) string {
@@ -134,15 +115,15 @@ func truncate(s string, max int) string {
 }
 
 // renderMessage formats a single message for display.
-// Thread replies include an arrow prefix and, when available, a snippet of the parent.
+// Used by AddMessage to generate the stored rendered form.
 func renderMessage(msg Message, snippet string) string {
 	ts := time.UnixMilli(msg.CreateAt).Format("15:04")
 
 	if msg.RootID != "" {
 		if snippet != "" {
-			return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s  ↩ В ответ на: %s", ts, msg.ChannelName, msg.SenderName, msg.Text, snippet)
+			return fmt.Sprintf("[%s] #%s  ↩ @%s: %s  (%s)", ts, msg.ChannelName, msg.SenderName, msg.Text, snippet)
 		}
-		return fmt.Sprintf("[%s] #%-20s  ↩ %s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
+		return fmt.Sprintf("[%s] #%s  ↩ @%s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
 	}
-	return fmt.Sprintf("[%s] #%-20s  %s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
+	return fmt.Sprintf("[%s] #%s  @%s: %s", ts, msg.ChannelName, msg.SenderName, msg.Text)
 }

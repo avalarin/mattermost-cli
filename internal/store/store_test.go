@@ -59,8 +59,8 @@ func TestRenderReplyNoParent(t *testing.T) {
 	if !strings.Contains(line, "my reply") {
 		t.Errorf("expected message text in line, got: %q", line)
 	}
-	if strings.Contains(line, "В ответ на") {
-		t.Errorf("expected no parent snippet when snippet is empty, got: %q", line)
+	if strings.Contains(line, "(") {
+		t.Errorf("expected no snippet parens when snippet is empty, got: %q", line)
 	}
 }
 
@@ -148,7 +148,7 @@ func TestAddMessageCap(t *testing.T) {
 	s.mu.Unlock()
 
 	if n > messageCap {
-		t.Errorf("in-memory store exceeded cap: %d > %d", n, messageCap)
+		t.Errorf("messages slice exceeded cap: %d > %d", n, messageCap)
 	}
 }
 
@@ -165,11 +165,11 @@ func TestLoadRecent(t *testing.T) {
 	}
 
 	s := NewStore(db)
-	lines, err := s.LoadRecent(3)
+	msgs, err := s.LoadRecent(3)
 	if err != nil {
 		t.Fatalf("LoadRecent: %v", err)
 	}
-	if len(lines) != 3 {
-		t.Errorf("expected 3 lines, got %d", len(lines))
+	if len(msgs) != 3 {
+		t.Errorf("expected 3 messages, got %d", len(msgs))
 	}
 }
