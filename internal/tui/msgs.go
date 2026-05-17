@@ -53,3 +53,9 @@ type MsgOpenHelp struct{}
 type MsgChannelSelected struct {
 	ChannelID string // empty string = All Activity
 }
+
+// MsgDMNamesResolved carries resolved display names for DM channels.
+type MsgDMNamesResolved struct {
+	// Names maps channel ID to display name (e.g. "@alice").
+	Names map[string]string
+}

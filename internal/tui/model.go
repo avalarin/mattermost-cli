@@ -77,6 +77,9 @@ type Model struct {
 	activeChannelID string // "" = All Activity
 	channelsWidth   int    // from config, default 22
 	feedH           int    // cached body height, updated in handleWindowSize/syncInputHeight
+
+	channelsRaw       []mattermost.Channel // original channel list, used for DM name resolution
+	showModeIndicator bool                 // when true, status bar shows current mode badge
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -114,7 +117,8 @@ func NewModel() Model {
 }
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
-// WebSocket channels, channel list, store, REST client, team ID, and channels sidebar width.
+// WebSocket channels, channel list, store, REST client, team ID, channels sidebar width,
+// and whether to display the mode indicator in the status bar.
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -125,6 +129,7 @@ func NewModelWithHeader(
 	client *mattermost.Client,
 	teamID string,
 	channelsWidth int,
+	showModeIndicator bool,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -137,6 +142,7 @@ func NewModelWithHeader(
 	m.store = st
 	m.client = client
 	m.teamID = teamID
+	m.showModeIndicator = showModeIndicator
 
 	if channelsWidth > 0 {
 		m.channelsWidth = channelsWidth
@@ -149,6 +155,7 @@ func NewModelWithHeader(
 		}
 	}
 
+	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
 	m.messagesView = NewMessagesView(st)
 	m.registry = buildRegistry(client, teamID)
@@ -263,6 +270,9 @@ func (m Model) Init() tea.Cmd {
 	if m.store != nil {
 		cmds = append(cmds, loadHistory(m.store))
 	}
+	if m.client != nil {
+		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -293,6 +303,58 @@ func loadHistory(s *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		msgs, err := s.LoadRecent(100)
 		return MsgHistoryLoaded{Messages: msgs, Err: err}
+	}
+}
+
+// resolveDMNames fetches usernames for DM channels and returns MsgDMNamesResolved.
+// For each DM channel (Type == "D"), it parses the channel name (userID1__userID2),
+// determines the other user, fetches their profile, and maps channelID -> "@username".
+func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+	return func() tea.Msg {
+		selfID := client.CurrentUserID()
+		// Collect unique other-user IDs from DM channels.
+		var ids []string
+		seen := make(map[string]bool)
+		dmChannelIDs := make(map[string]string) // other userID → channel ID
+		for _, ch := range channels {
+			if ch.Type != "D" {
+				continue
+			}
+			// name format: userID1__userID2
+			parts := strings.SplitN(ch.Name, "__", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			otherID := parts[0]
+			if otherID == selfID {
+				otherID = parts[1]
+			}
+			if !seen[otherID] {
+				seen[otherID] = true
+				ids = append(ids, otherID)
+			}
+			dmChannelIDs[otherID] = ch.ID
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+		users, err := client.GetUsersByIDs(ids)
+		if err != nil {
+			return nil // silently ignore; IDs remain as fallback
+		}
+		names := make(map[string]string, len(users))
+		for otherID, u := range users {
+			chID, ok := dmChannelIDs[otherID]
+			if !ok {
+				continue
+			}
+			name := u.Username
+			if name == "" {
+				name = otherID
+			}
+			names[chID] = "@" + name
+		}
+		return MsgDMNamesResolved{Names: names}
 	}
 }
 
@@ -391,6 +453,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
 		// In T1, no actual channel filtering yet — just update state.
+		return m, nil
+
+	case MsgDMNamesResolved:
+		m.channelsView = m.channelsView.ApplyDMNames(msg.Names)
 		return m, nil
 	}
 
@@ -634,6 +700,11 @@ func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input.Focus() //nolint:errcheck
 		return m, nil
 
+	case key.Matches(msg, m.keys.FocusMessages): // ctrl+j → messages
+		m.mode = ModeMessages
+		m.messagesView = m.messagesView.SelectLast()
+		return m, nil
+
 	case key.Matches(msg, m.keys.Up):
 		m.channelsView = m.channelsView.MoveUp()
 		return m, nil
@@ -828,7 +899,7 @@ func (m Model) View() string {
 
 // renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
 func (m Model) renderBody() string {
-	channelsPanel := m.channelsView.View()
+	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).View()
 	msgsHeader := m.renderMessagesHeader()
 	msgsContent := m.messagesView.View()
 
@@ -862,7 +933,17 @@ func (m Model) renderMessagesHeader() string {
 	if msgsW < 1 {
 		msgsW = 1
 	}
-	return lipgloss.NewStyle().Bold(true).Width(msgsW).Render(name)
+	var headerStyle lipgloss.Style
+	if m.mode == ModeMessages {
+		headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Width(msgsW).
+			Background(lipgloss.Color("25")).
+			Foreground(lipgloss.Color("15"))
+	} else {
+		headerStyle = lipgloss.NewStyle().Bold(true).Width(msgsW)
+	}
+	return headerStyle.Render(name)
 }
 
 func (m Model) renderHeader() string {
@@ -919,7 +1000,31 @@ func (m Model) renderStatusBar() string {
 	if m.statusIsError {
 		color = lipgloss.Color("203")
 	}
-	return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
+
+	if !m.showModeIndicator {
+		return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
+	}
+
+	modeLabels := map[Mode]string{
+		ModeInput:    "[INPUT]",
+		ModeMessages: "[MESSAGES]",
+		ModeChannels: "[CHANNELS]",
+		ModeHelp:     "[HELP]",
+	}
+	badge := modeLabels[m.mode]
+	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("25"))
+	styledBadge := badgeStyle.Render(badge)
+
+	// Reserve space for the badge (plain-text width) so the status message
+	// fills the remaining width without running into ANSI escape sequences.
+	badgePlainW := len([]rune(badge))
+	sep := " "
+	msgW := m.width - badgePlainW - len([]rune(sep))
+	if msgW < 0 {
+		msgW = 0
+	}
+	styledMsg := lipgloss.NewStyle().Width(msgW).Foreground(color).Render(msg)
+	return styledBadge + sep + styledMsg
 }
 
 func (m Model) renderInput() string {

@@ -24,7 +24,8 @@ type ChannelsView struct {
 	openIdx     int // currently open channel (-1 initially, 0 = All Activity)
 	scrollOff   int // index of first visible item
 	width       int
-	height      int // total height including header
+	height      int  // total height including header
+	active      bool // true when the channels panel has keyboard focus
 }
 
 // NewChannelsView creates a ChannelsView with All Activity pinned first,
@@ -194,6 +195,25 @@ func (cv ChannelsView) DisplayNameByID(channelID string) string {
 	return "All Activity"
 }
 
+// SetActive sets whether this panel has keyboard focus, controlling the header accent.
+func (cv ChannelsView) SetActive(active bool) ChannelsView {
+	cv.active = active
+	return cv
+}
+
+// ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
+func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
+	for i, item := range cv.items {
+		if item.isAll {
+			continue
+		}
+		if name, ok := names[item.channel.ID]; ok {
+			cv.items[i].channel.DisplayName = name
+		}
+	}
+	return cv
+}
+
 // SelectedDisplayName returns the display name of the selected channel
 // ("All Activity" for the aggregate filter).
 func (cv ChannelsView) SelectedDisplayName() string {
@@ -248,8 +268,17 @@ func truncateLabel(label string, maxWidth int) string {
 func (cv ChannelsView) View() string {
 	var sb strings.Builder
 
-	// Header line.
-	headerStyle := lipgloss.NewStyle().Bold(true).Width(cv.width)
+	// Header line: accent when active (keyboard focus), plain bold otherwise.
+	var headerStyle lipgloss.Style
+	if cv.active {
+		headerStyle = lipgloss.NewStyle().
+			Bold(true).
+			Width(cv.width).
+			Background(lipgloss.Color("25")).
+			Foreground(lipgloss.Color("15"))
+	} else {
+		headerStyle = lipgloss.NewStyle().Bold(true).Width(cv.width)
+	}
 	sb.WriteString(headerStyle.Render("Channels"))
 
 	ch := cv.contentHeight()

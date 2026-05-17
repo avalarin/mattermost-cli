@@ -452,7 +452,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 // testModelWithClient builds a Model wired to the given client and initializes the viewport.
 func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
 	t.Helper()
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22)
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mustModel(t, updated)
 }
@@ -634,7 +634,7 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 
 // TestHelpPopupOpens: /help with no args opens ModeHelp.
 func TestHelpPopupOpens(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22)
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false)
 	m = initModel(t, m)
 
 	// Type "/help" and press Enter.

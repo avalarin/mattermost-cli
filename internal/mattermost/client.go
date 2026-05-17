@@ -154,6 +154,25 @@ func (c *Client) FindOrCreateDM(teamID, targetUserID string) (*Channel, error) {
 	return &ch, nil
 }
 
+// CurrentUserID returns the cached current user ID (set after GetCurrentUser is called).
+func (c *Client) CurrentUserID() string {
+	return c.currentUserID
+}
+
+// GetUsersByIDs fetches profiles for the given user IDs.
+// Returns a map from user ID to User.
+func (c *Client) GetUsersByIDs(ids []string) (map[string]User, error) {
+	var users []User
+	if err := c.post("/users/ids", ids, &users); err != nil {
+		return nil, err
+	}
+	result := make(map[string]User, len(users))
+	for _, u := range users {
+		result[u.ID] = u
+	}
+	return result, nil
+}
+
 // GetUserByUsername retrieves a user by their username.
 func (c *Client) GetUserByUsername(username string) (*User, error) {
 	var u User
