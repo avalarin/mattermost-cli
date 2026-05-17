@@ -188,10 +188,7 @@ func (cv ChannelsView) DisplayNameByID(channelID string) string {
 	}
 	for _, item := range cv.items {
 		if !item.isAll && item.channel.ID == channelID {
-			if item.channel.DisplayName != "" {
-				return "#" + item.channel.DisplayName
-			}
-			return "#" + item.channel.Name
+			return channelLabel(item)
 		}
 	}
 	return "All Activity"
@@ -217,6 +214,7 @@ func (cv ChannelsView) SetActiveBg(color string) ChannelsView {
 
 // ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
 func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
+	cv.items = append([]channelItem(nil), cv.items...)
 	for i, item := range cv.items {
 		if item.isAll {
 			continue

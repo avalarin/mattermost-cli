@@ -56,6 +56,7 @@ type MsgChannelSelected struct {
 
 // MsgDMNamesResolved carries resolved display names for DM channels.
 type MsgDMNamesResolved struct {
-	// Names maps channel ID to display name (e.g. "@alice").
+	// Names maps channel ID to the resolved username (e.g. "alice", without the @ sigil).
+	// The @ prefix is added by the rendering layer (channelLabel).
 	Names map[string]string
 }

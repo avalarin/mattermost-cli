@@ -724,6 +724,9 @@ func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.FocusMessages): // ctrl+j → messages
 		m.mode = ModeMessages
 		m.messagesView = m.messagesView.SelectLast()
+		if m.ready {
+			m.messagesView = m.messagesView.rerenderFeed()
+		}
 		return m, nil
 
 	case key.Matches(msg, m.keys.Up):
