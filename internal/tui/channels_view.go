@@ -215,8 +215,14 @@ func (cv ChannelsView) SetActiveBg(color string) ChannelsView {
 }
 
 // SetUnreadCounts sets the unread message counts used when rendering channel labels.
+// The map is copied defensively so future mutations to the caller's map don't affect
+// counts already captured in a ChannelsView value.
 func (cv ChannelsView) SetUnreadCounts(counts map[string]int) ChannelsView {
-	cv.unreadCounts = counts
+	cp := make(map[string]int, len(counts))
+	for k, v := range counts {
+		cp[k] = v
+	}
+	cv.unreadCounts = cp
 	return cv
 }
 

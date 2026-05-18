@@ -88,9 +88,9 @@ type MsgResetCaches struct{}
 type MsgResetDB struct{}
 
 // MsgUnreadsLoaded carries the initial unread counts for all channels.
+// Individual channel fetch failures are silently skipped; missing keys mean zero unreads.
 type MsgUnreadsLoaded struct {
 	Counts map[string]int
-	Err    error
 }
 
 // MsgChannelRead signals that a channel has been successfully marked as read.

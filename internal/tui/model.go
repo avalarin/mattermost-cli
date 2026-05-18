@@ -700,8 +700,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgUnreadsLoaded:
-		if msg.Err == nil && msg.Counts != nil {
-			m.unreadCounts = msg.Counts
+		// Merge rather than replace: preserve any WS-incremented counts that arrived
+		// during the parallel startup fetch (W3: avoid clobbering concurrent increments).
+		for id, n := range msg.Counts {
+			if m.unreadCounts[id] == 0 {
+				m.unreadCounts[id] = n
+			}
 		}
 		return m, nil
 
