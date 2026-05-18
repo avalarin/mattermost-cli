@@ -244,6 +244,20 @@ func buildRegistry(client *mattermost.Client, teamID string) *Registry {
 		},
 	})
 
+	r.Register(&CommandDef{
+		Name:        "reset",
+		Description: "Clear in-memory caches; /reset db also wipes the database",
+		Args: []ArgSpec{
+			{Name: "target", Description: "db (optional)", Required: false},
+		},
+		Execute: func(args map[string]string) tea.Cmd {
+			if args["target"] == "db" {
+				return func() tea.Msg { return MsgResetDB{} }
+			}
+			return func() tea.Msg { return MsgResetCaches{} }
+		},
+	})
+
 	return r
 }
 
@@ -704,6 +718,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: m.activeChannelID} },
 			loadChannelHistoryCmd(m.client, m.activeChannelID, page, true),
 		)
+
+	case MsgResetCaches:
+		if m.store != nil {
+			m.store.Reset()
+		}
+		m.messagesView = m.messagesView.SetFeedItems(nil)
+		m.statusMsg = "Caches cleared"
+		m.statusIsError = false
+		m.statusGen++
+		return m, clearStatusAfter(3*time.Second, m.statusGen)
+
+	case MsgResetDB:
+		if m.store != nil {
+			m.store.Reset()
+			if err := m.store.DeleteAllMessages(); err != nil {
+				m.statusMsg = fmt.Sprintf("reset db: %v", err)
+				m.statusIsError = true
+				m.statusGen++
+				return m, clearStatusAfter(5*time.Second, m.statusGen)
+			}
+		}
+		m.messagesView = m.messagesView.SetFeedItems(nil)
+		m.statusMsg = "Caches and database cleared"
+		m.statusIsError = false
+		m.statusGen++
+		return m, clearStatusAfter(3*time.Second, m.statusGen)
 
 	case MsgDMNamesResolved:
 		m.channelsView = m.channelsView.ApplyDMNames(msg.Names)

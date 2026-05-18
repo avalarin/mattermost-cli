@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/avalarin/mattermost-cli/internal/mattermost"
+	"github.com/avalarin/mattermost-cli/internal/store"
 )
 
 func mustModel(t *testing.T, m tea.Model) Model {
@@ -1045,6 +1046,67 @@ func TestMessagesViewShowAll(t *testing.T) {
 }
 
 // TestIncrementReplyCountOnWSPost verifies that a WS reply event increments the parent's badge.
+func TestResetCachesClearsFeed(t *testing.T) {
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m = initModel(t, m)
+	m.activeChannelID = "chan1"
+
+	// Populate the feed with a message.
+	updated, _ := m.Update(MsgChannelHistory{
+		ChannelID: "chan1",
+		Messages:  []mattermost.Message{{ID: "m1", ChannelID: "chan1", UserID: "u", Text: "hello", CreateAt: 1000}},
+	})
+	m = mustModel(t, updated)
+
+	if !strings.Contains(m.messagesView.View(), "hello") {
+		t.Fatal("expected message in feed before reset")
+	}
+
+	updated2, _ := m.Update(MsgResetCaches{})
+	m = mustModel(t, updated2)
+
+	if strings.Contains(m.messagesView.View(), "hello") {
+		t.Errorf("expected feed cleared after MsgResetCaches, still contains message")
+	}
+	if m.statusMsg != "Caches cleared" {
+		t.Errorf("expected status 'Caches cleared', got %q", m.statusMsg)
+	}
+}
+
+func TestResetDBClearsFeedAndDB(t *testing.T) {
+	db, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	st := store.NewStore(db)
+
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m = initModel(t, m)
+	m.store = st
+
+	// Add a message to the store so it lands in DB.
+	st.AddMessage(store.Message{ID: "dbm1", ChannelID: "c1", UserID: "u", SenderName: "a", ChannelName: "ch", CreateAt: 1, Text: "db msg"})
+
+	updated, _ := m.Update(MsgResetDB{})
+	m = mustModel(t, updated)
+
+	if strings.Contains(m.messagesView.View(), "db msg") {
+		t.Errorf("expected feed cleared after MsgResetDB")
+	}
+	if m.statusMsg != "Caches and database cleared" {
+		t.Errorf("expected DB-cleared status, got %q", m.statusMsg)
+	}
+	// Verify DB is empty.
+	msgs, err := st.LoadRecent(10)
+	if err != nil {
+		t.Fatalf("LoadRecent: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected empty DB after reset db, got %d messages", len(msgs))
+	}
+}
+
 func TestIncrementReplyCountOnWSPost(t *testing.T) {
 	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
 	m = initModel(t, m)

@@ -117,3 +117,9 @@ func (d *DB) IncrementReplyCount(id string) error {
 	_, err := d.db.Exec(`UPDATE messages SET reply_count = reply_count + 1 WHERE id = ?`, id)
 	return err
 }
+
+// DeleteAllMessages removes all rows from the messages table.
+func (d *DB) DeleteAllMessages() error {
+	_, err := d.db.Exec(`DELETE FROM messages`)
+	return err
+}

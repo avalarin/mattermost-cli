@@ -182,6 +182,24 @@ func (s *Store) GetChannelMessages(channelID string) []Message {
 	return result
 }
 
+// Reset clears all in-memory caches (global message list and per-channel maps).
+// The database is not touched; call DeleteAllMessages separately if needed.
+func (s *Store) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = s.messages[:0]
+	s.channelMessages = make(map[string][]Message)
+}
+
+// DeleteAllMessages wipes all messages from the database.
+// Returns nil when there is no database configured.
+func (s *Store) DeleteAllMessages() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.DeleteAllMessages()
+}
+
 // IncrementReplyCount increments the reply_count of the message with the given ID
 // in both the global in-memory list and all per-channel caches, then persists to the DB.
 func (s *Store) IncrementReplyCount(rootID string) {
