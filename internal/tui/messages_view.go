@@ -239,7 +239,7 @@ func (mv MessagesView) rerenderFeed() MessagesView {
 				if fm.post.RootID != "" && mv.store != nil {
 					snippet = mv.store.GetParentSnippet(fm.post.RootID)
 				}
-				rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM, mv.isAllActivity)
+				rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM, mv.isAllActivity, false)
 				if idx == mv.selectedIdx {
 					rendered = highlightBlock(rendered, mv.width)
 				}
@@ -349,7 +349,8 @@ func highlightBlock(s string, width int) string {
 // isDM suppresses the channel prefix for direct message channels.
 // isAllActivity controls badge rendering: reply messages receive ⤴︎ only in All Activity mode.
 // fullDateFormat is the Go time layout used when the message is not from today.
-func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet, fullDateFormat string, width int, isDM bool, isAllActivity bool) string {
+// fullText disables the 3-line truncation so all body lines are rendered.
+func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet, fullDateFormat string, width int, isDM bool, isAllActivity bool, fullText bool) string {
 	msgTime := time.UnixMilli(msg.CreateAt)
 	now := time.Now()
 	var ts string
@@ -411,7 +412,7 @@ func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet,
 		Italic(true)
 
 	allLines := []string{headerLine}
-	if len(bodyLines) <= 3 {
+	if fullText || len(bodyLines) <= 3 {
 		for _, l := range bodyLines {
 			allLines = append(allLines, bodyIndent+l)
 		}

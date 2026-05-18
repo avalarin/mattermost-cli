@@ -187,15 +187,15 @@ channel_messages = "root_only"   # "root_only" | "all"
 **Клавиши:**
 | Клавиша | Действие |
 |---|---|
-| `Ctrl+J` | Переход в channels |
-| `Ctrl+M` | Переход в messages |
-| `Ctrl+B` | Переход в input (из любого режима) |
-| `Ctrl+K` | Открыть search_channel |
+| `Ctrl+B` | Prefix-клавиша: +↑/→ messages, +↓ input, +← channels |
+| `Ctrl+J` | Переход в messages |
+| `Ctrl+L` | Переход в channels |
+| `Ctrl+K` | Открыть search popup (каналы + пользователи) |
 | `↑` / `↓` | Навигация по каналам / прокрутка сообщений |
 | `PgUp` / `PgDn` | Быстрая прокрутка |
 | `End` | Прыжок к последнему сообщению |
 | `Enter` (в channels) | Открыть выбранный канал |
-| `Enter` (в messages) | Открыть thread_popup |
+| `Enter` (в messages) | Открыть thread popup |
 | `Esc` | Закрыть popup / вернуться в input |
 
 

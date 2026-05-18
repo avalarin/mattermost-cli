@@ -38,13 +38,14 @@ type AIConfig struct {
 }
 
 type UIConfig struct {
-	DateFormat        string `toml:"date_format"`
-	FullDateFormat    string `toml:"full_date_format"`
-	MessageLimit      int    `toml:"message_limit"`
-	Theme             string `toml:"theme"`
-	ChannelsWidth     int    `toml:"channels_width"`
-	ShowModeIndicator bool   `toml:"show_mode_indicator"`
-	ChannelMessages   string `toml:"channel_messages"` // "root_only" | "all"
+	DateFormat           string `toml:"date_format"`
+	FullDateFormat       string `toml:"full_date_format"`
+	MessageLimit         int    `toml:"message_limit"`
+	Theme                string `toml:"theme"`
+	ChannelsWidth        int    `toml:"channels_width"`
+	ShowModeIndicator    bool   `toml:"show_mode_indicator"`
+	ChannelMessages      string `toml:"channel_messages"`        // "root_only" | "all"
+	ThreadPopupWidthPct  int    `toml:"thread_popup_width_pct"`  // percent of terminal width, default 70
 }
 
 func Load(path string) (*Config, error) {
@@ -74,6 +75,7 @@ func applyDefaults(cfg *Config) {
 	cfg.UI.ChannelsWidth = 22
 	cfg.UI.ShowModeIndicator = true
 	cfg.UI.ChannelMessages = "root_only"
+	cfg.UI.ThreadPopupWidthPct = 70
 	cfg.Colors.ActiveHeaderBg = "237"
 	cfg.Colors.ActiveHeaderFg = "15"
 	cfg.AI.Model = "claude-sonnet-4-6"
