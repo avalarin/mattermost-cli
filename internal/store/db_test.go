@@ -88,6 +88,39 @@ func TestInsertDuplicateIgnored(t *testing.T) {
 	}
 }
 
+// TestInsertMessageUpsertReplyCount verifies that re-inserting a message with a
+// higher reply_count (e.g. from REST after a WS insert) updates the stored value.
+func TestInsertMessageUpsertReplyCount(t *testing.T) {
+	db := openMemoryDB(t)
+
+	base := Message{ID: "u1", ChannelID: "c", UserID: "u", Text: "hi", SenderName: "s", ChannelName: "ch", CreateAt: 1, ReplyCount: 0}
+	if err := db.InsertMessage(base); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	updated := base
+	updated.ReplyCount = 3
+	if err := db.InsertMessage(updated); err != nil {
+		t.Fatalf("upsert insert: %v", err)
+	}
+
+	got, err := db.GetMessageByID("u1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ReplyCount != 3 {
+		t.Errorf("ReplyCount = %d, want 3", got.ReplyCount)
+	}
+	// Confirm only one row exists.
+	msgs, _ := db.GetRecentMessages(10)
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 row, got %d", len(msgs))
+	}
+}
+
 func TestGetRecentMessagesOrdering(t *testing.T) {
 	db := openMemoryDB(t)
 

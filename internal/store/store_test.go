@@ -199,6 +199,29 @@ func TestStoreAddChannelMessagesPrepend(t *testing.T) {
 	}
 }
 
+// TestAddChannelMessagesDeduplication verifies that re-adding a message already in the
+// cache (e.g. from REST after WS) deduplicates by ID and the incoming value wins.
+func TestAddChannelMessagesDeduplication(t *testing.T) {
+	s := openMemoryStore(t)
+
+	// WS delivers the message first with ReplyCount=0.
+	ws := Message{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u1", Text: "hello", ReplyCount: 0}
+	s.AddChannelMessages("c1", []Message{ws}, false)
+
+	// REST later delivers the same message with ReplyCount=2.
+	rest := ws
+	rest.ReplyCount = 2
+	s.AddChannelMessages("c1", []Message{rest}, false)
+
+	got := s.GetChannelMessages("c1")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message after dedup, got %d", len(got))
+	}
+	if got[0].ReplyCount != 2 {
+		t.Errorf("ReplyCount = %d, want 2 (REST value should win)", got[0].ReplyCount)
+	}
+}
+
 func TestIncrementReplyCount(t *testing.T) {
 	s := openMemoryStore(t)
 

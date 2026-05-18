@@ -61,12 +61,12 @@ func createSchema(db *sql.DB) error {
 	return nil
 }
 
-// InsertMessage inserts a message; duplicate IDs are silently ignored.
+// InsertMessage inserts a message, updating reply_count if the ID already exists.
 func (d *DB) InsertMessage(msg Message) error {
 	_, err := d.db.Exec(`
 		INSERT INTO messages (id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO NOTHING
+		ON CONFLICT(id) DO UPDATE SET reply_count = EXCLUDED.reply_count
 	`, msg.ID, msg.ChannelID, msg.UserID, msg.Text, msg.SenderName, msg.ChannelName, msg.RootID, msg.CreateAt, msg.ReplyCount)
 	return err
 }

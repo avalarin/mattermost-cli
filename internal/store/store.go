@@ -119,11 +119,25 @@ func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend boo
 	defer s.mu.Unlock()
 
 	existing := s.channelMessages[channelID]
+
+	// Build an ID set from the incoming batch so we can deduplicate.
+	// Incoming msgs take precedence (they carry up-to-date reply_count from REST).
+	incomingIDs := make(map[string]struct{}, len(msgs))
+	for _, m := range msgs {
+		incomingIDs[m.ID] = struct{}{}
+	}
+	filtered := existing[:0:0] // same backing type, zero length
+	for _, m := range existing {
+		if _, dup := incomingIDs[m.ID]; !dup {
+			filtered = append(filtered, m)
+		}
+	}
+
 	var combined []Message
 	if prepend {
-		combined = append(msgs, existing...)
+		combined = append(msgs, filtered...)
 	} else {
-		combined = append(existing, msgs...)
+		combined = append(filtered, msgs...)
 	}
 	// Cap to channelMessageCap, keeping the appropriate end.
 	// When prepending (older msgs), keep the front (oldest); when appending, keep the tail (newest).
