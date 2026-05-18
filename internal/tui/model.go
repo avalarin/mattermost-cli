@@ -1667,6 +1667,8 @@ func (m Model) renderStatusBar() string {
 // truncate the message preview to exactly fit one line.
 func (m Model) buildStatusMsg(availW int) string {
 	fitPreview := func(sender, text, suffix string) string {
+		// Collapse newlines so the preview stays on one line.
+		text = strings.ReplaceAll(text, "\n", " ")
 		// "[sender] " + preview + suffix must fit in availW runes.
 		prefix := fmt.Sprintf("[%s] ", sender)
 		fixed := len([]rune(prefix)) + len([]rune(suffix))
