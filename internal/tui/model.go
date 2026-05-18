@@ -1619,12 +1619,22 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	msg := m.statusMsg
 	if msg == "" {
-		if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
-			msgID := item.msg.post.ID
-			if len(msgID) > 8 {
-				msgID = msgID[:8] + "..."
+		if m.threadPopup != nil {
+			if item, ok := m.threadPopup.SelectedItem(); ok && item.kind == feedItemKindMessage {
+				preview := item.msg.post.Text
+				if len([]rune(preview)) > 60 {
+					preview = string([]rune(preview)[:60]) + "…"
+				}
+				msg = fmt.Sprintf("[%s] %s  · r reply · e edit · d delete · Esc close", item.msg.senderName, preview)
+			} else {
+				msg = "r reply · e edit · d delete · Esc close"
 			}
-			msg = fmt.Sprintf("selected: %s  (esc twice to unselect)", msgID)
+		} else if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
+			preview := item.msg.post.Text
+			if len([]rune(preview)) > 60 {
+				preview = string([]rune(preview)[:60]) + "…"
+			}
+			msg = fmt.Sprintf("[%s] %s  · Enter to open thread · Esc to unselect", item.msg.senderName, preview)
 		} else {
 			msg = "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
 		}
