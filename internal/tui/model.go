@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -99,6 +100,8 @@ type Model struct {
 	openThreadRootID    string       // root ID of the currently open thread
 	replyRootID         string       // set by /reply; consumed by next /send
 	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
+
+	unreadCounts map[string]int // channelID → unread message count
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -141,6 +144,7 @@ func NewModel() Model {
 		messagesView:  NewMessagesView(nil),
 		activePage:    make(map[string]int),
 		spinner:       sp,
+		unreadCounts:  make(map[string]int),
 	}
 }
 
@@ -495,6 +499,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.client != nil {
 		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw))
+		if len(m.channelsRaw) > 0 {
+			cmds = append(cmds, loadUnreadsCmd(m.client, m.channelsRaw))
+		}
 	}
 	return tea.Batch(cmds...)
 }
@@ -581,6 +588,39 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 	}
 }
 
+// loadUnreadsCmd fetches unread counts for all channels in parallel.
+func loadUnreadsCmd(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+	return func() tea.Msg {
+		counts := make(map[string]int, len(channels))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ch := range channels {
+			ch := ch
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				u, err := client.GetChannelUnreads(ch.ID)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				counts[ch.ID] = u.MsgCount
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		return MsgUnreadsLoaded{Counts: counts}
+	}
+}
+
+// markReadCmd marks a channel as read and returns MsgChannelRead on completion.
+func markReadCmd(client *mattermost.Client, channelID string) tea.Cmd {
+	return func() tea.Msg {
+		_ = client.MarkChannelRead(channelID)
+		return MsgChannelRead{ChannelID: channelID}
+	}
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -659,6 +699,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, createAt: time.Now().UnixMilli(), system: msg.Text})
 		return m, nil
 
+	case MsgUnreadsLoaded:
+		if msg.Err == nil && msg.Counts != nil {
+			m.unreadCounts = msg.Counts
+		}
+		return m, nil
+
+	case MsgChannelRead:
+		if m.unreadCounts != nil {
+			m.unreadCounts[msg.ChannelID] = 0
+		}
+		return m, nil
+
 	case MsgEscTimeout:
 		if msg.Gen == m.escGen && m.escPending {
 			m.escPending = false
@@ -698,8 +750,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.openHelp()
 
 	case MsgChannelSelected:
+		prevChannelID := m.activeChannelID // capture before overwrite
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
+
+		// Mark the previous channel as read when switching away from it.
+		var markCmd tea.Cmd
+		if m.client != nil && prevChannelID != "" && prevChannelID != msg.ChannelID {
+			markCmd = markReadCmd(m.client, prevChannelID)
+		}
+
 		if msg.ChannelID == "" {
 			// All Activity: rebuild feed from the global in-memory message list
 			// so it reflects messages received while a specific channel was open.
@@ -731,7 +791,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.messagesView = m.messagesView.SetFeedItems(items)
 				m.messagesView = m.messagesView.GotoBottom()
 			}
-			return m, nil
+			return m, markCmd
 		}
 		m.messagesView = m.messagesView.SetAllActivity(false)
 		// Clear stale messages immediately so the old channel's feed isn't visible
@@ -747,6 +807,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: channelID} },
 			loadChannelHistoryCmd(m.client, channelID, 0, false),
 			m.spinner.Tick,
+			markCmd,
 		)
 
 	case MsgChannelHistoryLoading:
@@ -1448,6 +1509,16 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	}
 
 	isDM := m.channelTypes[post.ChannelID] == "D" || m.channelTypes[post.ChannelID] == "G"
+
+	// Increment unread count when a message arrives in a non-active channel.
+	// Only when a specific channel is open (not All Activity), and only for other channels.
+	if m.activeChannelID != "" && post.ChannelID != m.activeChannelID {
+		if m.unreadCounts == nil {
+			m.unreadCounts = make(map[string]int)
+		}
+		m.unreadCounts[post.ChannelID]++
+	}
+
 	// Only add to messages view if: All Activity OR message is in active channel.
 	shouldAdd := m.activeChannelID == "" || post.ChannelID == m.activeChannelID
 	// In root_only channel mode, skip replies in the feed (they only bump the parent badge).
@@ -1521,7 +1592,7 @@ func (m Model) View() string {
 
 // renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
 func (m Model) renderBody() string {
-	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveFg(m.activeHeaderFg).SetActiveBg(m.activeHeaderBg).View()
+	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveFg(m.activeHeaderFg).SetActiveBg(m.activeHeaderBg).SetUnreadCounts(m.unreadCounts).View()
 	msgsHeader := m.renderMessagesHeader()
 	msgsContent := m.messagesView.View()
 

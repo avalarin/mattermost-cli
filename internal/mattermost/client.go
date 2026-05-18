@@ -242,6 +242,23 @@ func (c *Client) GetPostThread(rootID string) ([]Message, error) {
 	return msgs, nil
 }
 
+// GetChannelUnreads returns the unread message and mention counts for a channel.
+func (c *Client) GetChannelUnreads(channelID string) (*ChannelUnread, error) {
+	var u ChannelUnread
+	if err := c.get(fmt.Sprintf("/users/me/channels/%s/unread", channelID), &u); err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+// MarkChannelRead marks a channel as read for the current user.
+func (c *Client) MarkChannelRead(channelID string) error {
+	body := struct {
+		ChannelID string `json:"channel_id"`
+	}{ChannelID: channelID}
+	return c.post(fmt.Sprintf("/channels/%s/members/me/view", channelID), body, nil)
+}
+
 // SendMessage sends a message to a channel. Set rootID to post as a thread reply.
 func (c *Client) SendMessage(channelID, text, rootID string) (*Message, error) {
 	body := struct {

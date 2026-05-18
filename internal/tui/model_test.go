@@ -1269,6 +1269,128 @@ func TestThreadRKeyInsertsReply(t *testing.T) {
 	}
 }
 
+// TestUnreadIncrementsOnWSPost verifies that a WS posted event in a non-active channel
+// increments the unread count for that channel.
+func TestUnreadIncrementsOnWSPost(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channels = map[string]string{"ch1": "general", "ch2": "backend"}
+	m.unreadCounts = make(map[string]int)
+	m.activeChannelID = "ch1" // ch1 is open
+
+	evt := buildPostedEvent("msg1", "backend", "ch2", "alice", "hello")
+	updated, _ := m.Update(evt)
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch2"] != 1 {
+		t.Errorf("unreadCounts[ch2] = %d, want 1", m.unreadCounts["ch2"])
+	}
+	if m.unreadCounts["ch1"] != 0 {
+		t.Errorf("unreadCounts[ch1] = %d, want 0 (active channel should not increment)", m.unreadCounts["ch1"])
+	}
+}
+
+// TestUnreadNotIncrementedForActiveChannel verifies that a WS posted event in the active channel
+// does not increment the unread count.
+func TestUnreadNotIncrementedForActiveChannel(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channels = map[string]string{"ch1": "general"}
+	m.unreadCounts = make(map[string]int)
+	m.activeChannelID = "ch1"
+
+	evt := buildPostedEvent("msg1", "general", "ch1", "bob", "hi")
+	updated, _ := m.Update(evt)
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch1"] != 0 {
+		t.Errorf("unreadCounts[ch1] = %d, want 0 (active channel should not increment)", m.unreadCounts["ch1"])
+	}
+}
+
+// TestUnreadNotIncrementedInAllActivity verifies that when All Activity is open,
+// background messages do not increment any unread counter.
+func TestUnreadNotIncrementedInAllActivity(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channels = map[string]string{"ch1": "general"}
+	m.unreadCounts = make(map[string]int)
+	m.activeChannelID = "" // All Activity
+
+	evt := buildPostedEvent("msg1", "general", "ch1", "alice", "hello")
+	updated, _ := m.Update(evt)
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch1"] != 0 {
+		t.Errorf("unreadCounts[ch1] = %d, want 0 (All Activity should not increment)", m.unreadCounts["ch1"])
+	}
+}
+
+// TestUnreadClearsOnChannelSwitch verifies that switching channels fires markReadCmd
+// for the previous channel, and handling MsgChannelRead resets its count.
+func TestUnreadClearsOnChannelSwitch(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channels = map[string]string{"ch1": "general", "ch2": "backend"}
+	m.channelsView = NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+		{ID: "ch2", Name: "backend"},
+	})
+	m.activeChannelID = "ch1"
+	m.unreadCounts = map[string]int{"ch1": 5, "ch2": 3}
+
+	// Switch from ch1 to ch2: markReadCmd for ch1 should be batched.
+	// We simulate the result by sending MsgChannelRead directly.
+	updated, _ := m.Update(MsgChannelSelected{ChannelID: "ch2"})
+	m = mustModel(t, updated)
+
+	// Simulate the async MsgChannelRead arriving back.
+	updated, _ = m.Update(MsgChannelRead{ChannelID: "ch1"})
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch1"] != 0 {
+		t.Errorf("unreadCounts[ch1] = %d, want 0 after MsgChannelRead", m.unreadCounts["ch1"])
+	}
+	// ch2's count is unaffected.
+	if m.unreadCounts["ch2"] != 3 {
+		t.Errorf("unreadCounts[ch2] = %d, want 3 (unaffected)", m.unreadCounts["ch2"])
+	}
+}
+
+// TestUnreadClearsOnSwitchToAllActivity verifies that switching from a channel to All Activity
+// fires markReadCmd for the previous channel.
+func TestUnreadClearsOnSwitchToAllActivity(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channels = map[string]string{"ch1": "general"}
+	m.channelsView = NewChannelsView([]mattermost.Channel{{ID: "ch1", Name: "general"}})
+	m.activeChannelID = "ch1"
+	m.unreadCounts = map[string]int{"ch1": 2}
+
+	// Switch to All Activity — markReadCmd for ch1 should fire.
+	// Simulate the result directly.
+	updated, _ := m.Update(MsgChannelSelected{ChannelID: ""})
+	m = mustModel(t, updated)
+
+	updated, _ = m.Update(MsgChannelRead{ChannelID: "ch1"})
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch1"] != 0 {
+		t.Errorf("unreadCounts[ch1] = %d, want 0", m.unreadCounts["ch1"])
+	}
+}
+
+// TestUnreadsLoadedUpdatesModel verifies that MsgUnreadsLoaded populates unreadCounts.
+func TestUnreadsLoadedUpdatesModel(t *testing.T) {
+	m := initModel(t, NewModel())
+
+	counts := map[string]int{"ch1": 4, "ch2": 0, "ch3": 7}
+	updated, _ := m.Update(MsgUnreadsLoaded{Counts: counts})
+	m = mustModel(t, updated)
+
+	if m.unreadCounts["ch1"] != 4 {
+		t.Errorf("unreadCounts[ch1] = %d, want 4", m.unreadCounts["ch1"])
+	}
+	if m.unreadCounts["ch3"] != 7 {
+		t.Errorf("unreadCounts[ch3] = %d, want 7", m.unreadCounts["ch3"])
+	}
+}
+
 // buildPostedEvent creates a fake mattermost.Event of type "posted" for testing.
 func buildPostedEvent(msgID, channelName, channelID, senderName, text string) mattermost.Event {
 	post := mattermost.Message{

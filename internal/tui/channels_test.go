@@ -99,3 +99,52 @@ func TestChannelsViewOpenHighlight(t *testing.T) {
 		t.Error("rendered channels view should contain 'general'")
 	}
 }
+
+// TestChannelsViewRendersUnreadBadge verifies that a channel with unread count > 0
+// shows the count badge in the rendered view.
+func TestChannelsViewRendersUnreadBadge(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	cv = cv.SetSize(30, 10)
+	cv = cv.SetUnreadCounts(map[string]int{"ch1": 3})
+
+	rendered := cv.View()
+	if !strings.Contains(rendered, "(3)") {
+		t.Errorf("expected unread badge '(3)' in rendered view, got:\n%s", rendered)
+	}
+}
+
+// TestChannelsViewNoBadgeWhenZero verifies that a channel with unread count == 0
+// does not show a badge.
+func TestChannelsViewNoBadgeWhenZero(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	cv = cv.SetSize(22, 10)
+	cv = cv.SetUnreadCounts(map[string]int{"ch1": 0})
+
+	rendered := cv.View()
+	if strings.Contains(rendered, "(0)") {
+		t.Errorf("should not show badge when count == 0, got:\n%s", rendered)
+	}
+}
+
+// TestAllActivityNoBadge verifies that All Activity never shows an unread badge.
+func TestAllActivityNoBadge(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	cv = cv.SetSize(22, 10)
+	// No counts for All Activity sentinel ID "".
+	cv = cv.SetUnreadCounts(map[string]int{"": 99})
+
+	rendered := cv.View()
+	// The first line (header) + second line (All Activity) should not show a number.
+	lines := strings.Split(rendered, "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "All Activity") && strings.Contains(line, "(99)") {
+			t.Errorf("line %d: All Activity should not show badge, got: %q", i, line)
+		}
+	}
+}
