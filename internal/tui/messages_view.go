@@ -214,43 +214,56 @@ func (mv MessagesView) PageSize() int {
 }
 
 // rerenderFeed rebuilds the viewport content from stored feed items.
+// System-only content (loading spinner, empty notice) is bottom-aligned so it
+// doesn't look like a top-of-feed message.
 func (mv MessagesView) rerenderFeed() MessagesView {
+	var content string
+	hasMessages := false
+
 	if len(mv.feedItems) == 0 {
-		if mv.ready {
-			mv.vp.SetContent("Waiting for messages...")
-		}
+		content = "No messages in this channel"
 		mv.lineOffsets = nil
-		return mv
-	}
+	} else {
+		parts := make([]string, 0, len(mv.feedItems))
+		offsets := make([]int, len(mv.feedItems))
+		lineCount := 0
 
-	parts := make([]string, 0, len(mv.feedItems))
-	offsets := make([]int, len(mv.feedItems))
-	lineCount := 0
-
-	for idx, item := range mv.feedItems {
-		offsets[idx] = lineCount
-		var rendered string
-		switch item.kind {
-		case feedItemKindMessage:
-			fm := item.msg
-			snippet := ""
-			if fm.post.RootID != "" && mv.store != nil {
-				snippet = mv.store.GetParentSnippet(fm.post.RootID)
+		for idx, item := range mv.feedItems {
+			offsets[idx] = lineCount
+			var rendered string
+			switch item.kind {
+			case feedItemKindMessage:
+				hasMessages = true
+				fm := item.msg
+				snippet := ""
+				if fm.post.RootID != "" && mv.store != nil {
+					snippet = mv.store.GetParentSnippet(fm.post.RootID)
+				}
+				rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM, mv.isAllActivity)
+				if idx == mv.selectedIdx {
+					rendered = highlightBlock(rendered, mv.width)
+				}
+			case feedItemKindSystem:
+				rendered = item.system
 			}
-			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM, mv.isAllActivity)
-			if idx == mv.selectedIdx {
-				rendered = highlightBlock(rendered, mv.width)
-			}
-		case feedItemKindSystem:
-			rendered = item.system
+			parts = append(parts, rendered)
+			lineCount += strings.Count(rendered, "\n") + 1
 		}
-		parts = append(parts, rendered)
-		lineCount += strings.Count(rendered, "\n") + 1
+
+		mv.lineOffsets = offsets
+		content = strings.Join(parts, "\n")
 	}
 
-	mv.lineOffsets = offsets
 	if mv.ready {
-		mv.vp.SetContent(strings.Join(parts, "\n"))
+		// Bottom-align system-only content (spinner, empty notice) so it
+		// doesn't read as a top-of-feed message.
+		if !hasMessages {
+			contentLines := strings.Count(content, "\n") + 1
+			if padding := mv.vp.Height - contentLines; padding > 0 {
+				content = strings.Repeat("\n", padding) + content
+			}
+		}
+		mv.vp.SetContent(content)
 	}
 	return mv
 }
