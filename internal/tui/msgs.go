@@ -80,3 +80,9 @@ type MsgChannelHistoryLoading struct {
 
 // MsgRequestReload is emitted by the /reload command to trigger a history reload.
 type MsgRequestReload struct{}
+
+// MsgResetCaches signals that all in-memory caches should be cleared.
+type MsgResetCaches struct{}
+
+// MsgResetDB signals that the database should be wiped in addition to in-memory caches.
+type MsgResetDB struct{}

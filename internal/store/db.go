@@ -48,26 +48,33 @@ func createSchema(db *sql.DB) error {
 			sender_name  TEXT NOT NULL,
 			channel_name TEXT NOT NULL,
 			root_id      TEXT NOT NULL DEFAULT '',
-			create_at    INTEGER NOT NULL
+			create_at    INTEGER NOT NULL,
+			reply_count  INTEGER NOT NULL DEFAULT 0
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+	// Migration for existing databases: add reply_count column if not present.
+	// SQLite returns an error if the column already exists — we ignore it.
+	_, _ = db.Exec(`ALTER TABLE messages ADD COLUMN reply_count INTEGER NOT NULL DEFAULT 0`)
+	return nil
 }
 
-// InsertMessage inserts a message; duplicate IDs are silently ignored.
+// InsertMessage inserts a message, updating reply_count if the ID already exists.
 func (d *DB) InsertMessage(msg Message) error {
 	_, err := d.db.Exec(`
-		INSERT INTO messages (id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(id) DO NOTHING
-	`, msg.ID, msg.ChannelID, msg.UserID, msg.Text, msg.SenderName, msg.ChannelName, msg.RootID, msg.CreateAt)
+		INSERT INTO messages (id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET reply_count = EXCLUDED.reply_count
+	`, msg.ID, msg.ChannelID, msg.UserID, msg.Text, msg.SenderName, msg.ChannelName, msg.RootID, msg.CreateAt, msg.ReplyCount)
 	return err
 }
 
 // GetRecentMessages returns up to limit messages ordered by create_at ascending (oldest first).
 func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 	rows, err := d.db.Query(`
-		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at
+		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count
 		FROM messages
 		ORDER BY create_at ASC
 		LIMIT ?
@@ -80,7 +87,7 @@ func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt, &m.ReplyCount); err != nil {
 			return nil, err
 		}
 		msgs = append(msgs, m)
@@ -91,11 +98,11 @@ func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 // GetMessageByID returns the message with the given ID, or nil if not found.
 func (d *DB) GetMessageByID(id string) (*Message, error) {
 	row := d.db.QueryRow(`
-		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at
+		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count
 		FROM messages WHERE id = ?
 	`, id)
 	var m Message
-	err := row.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt)
+	err := row.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Text, &m.SenderName, &m.ChannelName, &m.RootID, &m.CreateAt, &m.ReplyCount)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -103,4 +110,16 @@ func (d *DB) GetMessageByID(id string) (*Message, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// IncrementReplyCount increments the reply_count of the message with the given ID.
+func (d *DB) IncrementReplyCount(id string) error {
+	_, err := d.db.Exec(`UPDATE messages SET reply_count = reply_count + 1 WHERE id = ?`, id)
+	return err
+}
+
+// DeleteAllMessages removes all rows from the messages table.
+func (d *DB) DeleteAllMessages() error {
+	_, err := d.db.Exec(`DELETE FROM messages`)
+	return err
 }

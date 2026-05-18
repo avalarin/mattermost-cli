@@ -21,6 +21,7 @@ type Message struct {
 	RootID      string
 	SenderName  string
 	ChannelName string
+	ReplyCount  int
 }
 
 // Store holds an in-memory message list (capped at 1000) backed by SQLite.
@@ -112,17 +113,32 @@ func (s *Store) LoadRecent(limit int) ([]Message, error) {
 // AddChannelMessages adds messages to the per-channel cache.
 // prepend=true inserts older messages at the front (infinite scroll).
 // prepend=false appends newer messages at the back (initial load / WS events).
-// Cap per channel: 500 messages total. Also persists each message to the DB (best-effort).
+// Duplicate message IDs are silently dropped. Cap per channel: 500 messages total.
+// Also persists each message to the DB (best-effort).
 func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	existing := s.channelMessages[channelID]
+
+	// Build an ID set from the incoming batch so we can deduplicate.
+	// Incoming msgs take precedence (they carry up-to-date reply_count from REST).
+	incomingIDs := make(map[string]struct{}, len(msgs))
+	for _, m := range msgs {
+		incomingIDs[m.ID] = struct{}{}
+	}
+	filtered := existing[:0:0] // same backing type, zero length
+	for _, m := range existing {
+		if _, dup := incomingIDs[m.ID]; !dup {
+			filtered = append(filtered, m)
+		}
+	}
+
 	var combined []Message
 	if prepend {
-		combined = append(msgs, existing...)
+		combined = append(msgs, filtered...)
 	} else {
-		combined = append(existing, msgs...)
+		combined = append(filtered, msgs...)
 	}
 	// Cap to channelMessageCap, keeping the appropriate end.
 	// When prepending (older msgs), keep the front (oldest); when appending, keep the tail (newest).
@@ -142,6 +158,16 @@ func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend boo
 	}
 }
 
+// GetMessages returns all messages from the global in-memory list (oldest first).
+// Used to rebuild the All Activity feed when switching back from a specific channel.
+func (s *Store) GetMessages() []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]Message, len(s.messages))
+	copy(result, s.messages)
+	return result
+}
+
 // GetChannelMessages returns all messages for a channel in order (oldest first).
 func (s *Store) GetChannelMessages(channelID string) []Message {
 	s.mu.Lock()
@@ -156,6 +182,51 @@ func (s *Store) GetChannelMessages(channelID string) []Message {
 	return result
 }
 
+// Reset clears all in-memory caches (global message list and per-channel maps).
+// The database is not touched; call DeleteAllMessages separately if needed.
+func (s *Store) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = s.messages[:0]
+	s.channelMessages = make(map[string][]Message)
+}
+
+// DeleteAllMessages wipes all messages from the database.
+// Returns nil when there is no database configured.
+func (s *Store) DeleteAllMessages() error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.DeleteAllMessages()
+}
+
+// IncrementReplyCount increments the reply_count of the message with the given ID
+// in both the global in-memory list and all per-channel caches, then persists to the DB.
+func (s *Store) IncrementReplyCount(rootID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.messages {
+		if s.messages[i].ID == rootID {
+			s.messages[i].ReplyCount++
+			break
+		}
+	}
+
+	for channelID, msgs := range s.channelMessages {
+		for i := range msgs {
+			if msgs[i].ID == rootID {
+				// Must index via map key, not the range-copy 'msgs', to mutate in place.
+				s.channelMessages[channelID][i].ReplyCount++
+				break
+			}
+		}
+	}
+
+	if s.db != nil {
+		_ = s.db.IncrementReplyCount(rootID)
+	}
+}
 
 func truncate(s string, max int) string {
 	runes := []rune(s)

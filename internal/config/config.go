@@ -44,6 +44,7 @@ type UIConfig struct {
 	Theme             string `toml:"theme"`
 	ChannelsWidth     int    `toml:"channels_width"`
 	ShowModeIndicator bool   `toml:"show_mode_indicator"`
+	ChannelMessages   string `toml:"channel_messages"` // "root_only" | "all"
 }
 
 func Load(path string) (*Config, error) {
@@ -72,6 +73,7 @@ func applyDefaults(cfg *Config) {
 	cfg.UI.Theme = "auto"
 	cfg.UI.ChannelsWidth = 22
 	cfg.UI.ShowModeIndicator = true
+	cfg.UI.ChannelMessages = "root_only"
 	cfg.Colors.ActiveHeaderBg = "237"
 	cfg.Colors.ActiveHeaderFg = "15"
 	cfg.AI.Model = "claude-sonnet-4-6"

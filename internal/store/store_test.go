@@ -199,6 +199,103 @@ func TestStoreAddChannelMessagesPrepend(t *testing.T) {
 	}
 }
 
+// TestAddChannelMessagesDeduplication verifies that re-adding a message already in the
+// cache (e.g. from REST after WS) deduplicates by ID and the incoming value wins.
+func TestAddChannelMessagesDeduplication(t *testing.T) {
+	s := openMemoryStore(t)
+
+	// WS delivers the message first with ReplyCount=0.
+	ws := Message{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u1", Text: "hello", ReplyCount: 0}
+	s.AddChannelMessages("c1", []Message{ws}, false)
+
+	// REST later delivers the same message with ReplyCount=2.
+	rest := ws
+	rest.ReplyCount = 2
+	s.AddChannelMessages("c1", []Message{rest}, false)
+
+	got := s.GetChannelMessages("c1")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message after dedup, got %d", len(got))
+	}
+	if got[0].ReplyCount != 2 {
+		t.Errorf("ReplyCount = %d, want 2 (REST value should win)", got[0].ReplyCount)
+	}
+}
+
+func TestIncrementReplyCount(t *testing.T) {
+	s := openMemoryStore(t)
+
+	root := Message{ID: "root", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 100, UserID: "u", Text: "root msg"}
+	s.AddMessage(root)
+	s.AddChannelMessages("c1", []Message{root}, false)
+
+	s.IncrementReplyCount("root")
+	s.IncrementReplyCount("root")
+
+	// Check per-channel cache (public API).
+	got := s.GetChannelMessages("c1")
+	if len(got) == 0 {
+		t.Fatal("no messages in channel c1")
+	}
+	if got[0].ReplyCount != 2 {
+		t.Errorf("channel messages: ReplyCount = %d, want 2", got[0].ReplyCount)
+	}
+
+	// Check DB persistence.
+	dbMsg, err := s.db.GetMessageByID("root")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if dbMsg == nil {
+		t.Fatal("root message not found in DB")
+	}
+	if dbMsg.ReplyCount != 2 {
+		t.Errorf("DB: ReplyCount = %d, want 2", dbMsg.ReplyCount)
+	}
+}
+
+func TestStoreReset(t *testing.T) {
+	s := openMemoryStore(t)
+
+	s.AddMessage(Message{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 1, UserID: "u", Text: "hi"})
+	s.AddChannelMessages("c1", []Message{
+		{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 1, UserID: "u", Text: "hi"},
+	}, false)
+
+	s.Reset()
+
+	if got := s.GetChannelMessages("c1"); len(got) != 0 {
+		t.Errorf("channel cache not cleared: got %d messages", len(got))
+	}
+	// DB should still have the message.
+	dbMsg, err := s.db.GetMessageByID("m1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if dbMsg == nil {
+		t.Error("DB message should survive Reset()")
+	}
+}
+
+func TestStoreDeleteAllMessages(t *testing.T) {
+	s := openMemoryStore(t)
+
+	s.AddMessage(Message{ID: "m1", ChannelID: "c1", SenderName: "a", ChannelName: "ch", CreateAt: 1, UserID: "u", Text: "hi"})
+	s.Reset()
+
+	if err := s.DeleteAllMessages(); err != nil {
+		t.Fatalf("DeleteAllMessages: %v", err)
+	}
+
+	dbMsg, err := s.db.GetMessageByID("m1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if dbMsg != nil {
+		t.Error("DB message should be deleted after DeleteAllMessages()")
+	}
+}
+
 func TestLoadRecent(t *testing.T) {
 	db := openMemoryDB(t)
 

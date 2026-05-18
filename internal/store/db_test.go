@@ -88,6 +88,39 @@ func TestInsertDuplicateIgnored(t *testing.T) {
 	}
 }
 
+// TestInsertMessageUpsertReplyCount verifies that re-inserting a message with a
+// higher reply_count (e.g. from REST after a WS insert) updates the stored value.
+func TestInsertMessageUpsertReplyCount(t *testing.T) {
+	db := openMemoryDB(t)
+
+	base := Message{ID: "u1", ChannelID: "c", UserID: "u", Text: "hi", SenderName: "s", ChannelName: "ch", CreateAt: 1, ReplyCount: 0}
+	if err := db.InsertMessage(base); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	updated := base
+	updated.ReplyCount = 3
+	if err := db.InsertMessage(updated); err != nil {
+		t.Fatalf("upsert insert: %v", err)
+	}
+
+	got, err := db.GetMessageByID("u1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ReplyCount != 3 {
+		t.Errorf("ReplyCount = %d, want 3", got.ReplyCount)
+	}
+	// Confirm only one row exists.
+	msgs, _ := db.GetRecentMessages(10)
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 row, got %d", len(msgs))
+	}
+}
+
 func TestGetRecentMessagesOrdering(t *testing.T) {
 	db := openMemoryDB(t)
 
@@ -110,6 +143,55 @@ func TestGetRecentMessagesOrdering(t *testing.T) {
 	if msgs[0].CreateAt > msgs[1].CreateAt || msgs[1].CreateAt > msgs[2].CreateAt {
 		t.Errorf("messages not ordered ascending by create_at: %v %v %v",
 			msgs[0].CreateAt, msgs[1].CreateAt, msgs[2].CreateAt)
+	}
+}
+
+func TestInsertMessagePreservesReplyCount(t *testing.T) {
+	db := openMemoryDB(t)
+
+	msg := Message{
+		ID: "rc-1", ChannelID: "c", UserID: "u", Text: "hi",
+		SenderName: "s", ChannelName: "ch", CreateAt: 1, ReplyCount: 5,
+	}
+	if err := db.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+	msgs, err := db.GetRecentMessages(10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("expected 1 message")
+	}
+	if msgs[0].ReplyCount != 5 {
+		t.Errorf("ReplyCount = %d, want 5", msgs[0].ReplyCount)
+	}
+}
+
+func TestIncrementReplyCountDB(t *testing.T) {
+	db := openMemoryDB(t)
+
+	msg := Message{ID: "root-1", ChannelID: "c", UserID: "u", Text: "root", SenderName: "s", ChannelName: "ch", CreateAt: 1}
+	if err := db.InsertMessage(msg); err != nil {
+		t.Fatalf("InsertMessage: %v", err)
+	}
+
+	if err := db.IncrementReplyCount("root-1"); err != nil {
+		t.Fatalf("IncrementReplyCount: %v", err)
+	}
+	if err := db.IncrementReplyCount("root-1"); err != nil {
+		t.Fatalf("IncrementReplyCount second: %v", err)
+	}
+
+	got, err := db.GetMessageByID("root-1")
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected message, got nil")
+	}
+	if got.ReplyCount != 2 {
+		t.Errorf("ReplyCount = %d, want 2", got.ReplyCount)
 	}
 }
 

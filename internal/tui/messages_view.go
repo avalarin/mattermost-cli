@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,9 +33,10 @@ type feedMessage struct {
 
 // feedItem is a union type for the feed: either a chat message or a system-generated line.
 type feedItem struct {
-	kind   feedItemKind
-	msg    feedMessage // valid when kind == feedItemKindMessage
-	system string      // valid when kind == feedItemKindSystem (pre-formatted text)
+	kind     feedItemKind
+	createAt int64       // unix milliseconds; used for stable chronological ordering
+	msg      feedMessage // valid when kind == feedItemKindMessage
+	system   string      // valid when kind == feedItemKindSystem (pre-formatted text)
 }
 
 const bodyIndent = "  "
@@ -51,6 +54,7 @@ type MessagesView struct {
 	height         int    // total height (including header line)
 	ready          bool
 	fullDateFormat string // Go time format for dates outside today (e.g. "02.01.2006")
+	isAllActivity  bool   // true when showing the "All Activity" feed (affects badge rendering)
 }
 
 // NewMessagesView creates a new MessagesView with the given store.
@@ -67,6 +71,26 @@ func NewMessagesView(st *store.Store) MessagesView {
 func (mv MessagesView) SetFullDateFormat(format string) MessagesView {
 	if format != "" {
 		mv.fullDateFormat = format
+	}
+	return mv
+}
+
+// SetAllActivity controls whether the view is showing the "All Activity" feed.
+// When true, reply messages receive the ⤴︎ badge; otherwise only root messages are expected.
+func (mv MessagesView) SetAllActivity(v bool) MessagesView {
+	mv.isAllActivity = v
+	return mv.rerenderFeed()
+}
+
+// IncrementReplyCount finds the message with the given ID in feedItems and increments
+// its ReplyCount, then re-renders to update the ⤵︎ N badge.
+// If the ID is not present (e.g. the parent is off-screen), the view is returned unchanged.
+func (mv MessagesView) IncrementReplyCount(rootID string) MessagesView {
+	for i := range mv.feedItems {
+		if mv.feedItems[i].kind == feedItemKindMessage && mv.feedItems[i].msg.post.ID == rootID {
+			mv.feedItems[i].msg.post.ReplyCount++
+			return mv.rerenderFeed()
+		}
 	}
 	return mv
 }
@@ -91,9 +115,13 @@ func (mv MessagesView) SetSize(w, h int) MessagesView {
 	return mv
 }
 
-// AddFeedItem appends a new feed item, rerenders, and auto-scrolls if atBottom.
+// AddFeedItem inserts a new feed item in chronological order (by createAt),
+// rerenders, and auto-scrolls if atBottom.
 func (mv MessagesView) AddFeedItem(item feedItem) MessagesView {
-	mv.feedItems = append(mv.feedItems, item)
+	i := sort.Search(len(mv.feedItems), func(j int) bool {
+		return mv.feedItems[j].createAt > item.createAt
+	})
+	mv.feedItems = slices.Insert(mv.feedItems, i, item)
 	mv = mv.rerenderFeed()
 	if mv.atBottom {
 		mv.vp.GotoBottom()
@@ -101,8 +129,11 @@ func (mv MessagesView) AddFeedItem(item feedItem) MessagesView {
 	return mv
 }
 
-// SetFeedItems replaces all items and rerenders.
+// SetFeedItems replaces all items, sorts them chronologically, and rerenders.
 func (mv MessagesView) SetFeedItems(items []feedItem) MessagesView {
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].createAt < items[j].createAt
+	})
 	mv.feedItems = items
 	mv = mv.rerenderFeed()
 	return mv
@@ -183,43 +214,56 @@ func (mv MessagesView) PageSize() int {
 }
 
 // rerenderFeed rebuilds the viewport content from stored feed items.
+// System-only content (loading spinner, empty notice) is bottom-aligned so it
+// doesn't look like a top-of-feed message.
 func (mv MessagesView) rerenderFeed() MessagesView {
+	var content string
+	hasMessages := false
+
 	if len(mv.feedItems) == 0 {
-		if mv.ready {
-			mv.vp.SetContent("Waiting for messages...")
-		}
+		content = "No messages in this channel"
 		mv.lineOffsets = nil
-		return mv
-	}
+	} else {
+		parts := make([]string, 0, len(mv.feedItems))
+		offsets := make([]int, len(mv.feedItems))
+		lineCount := 0
 
-	parts := make([]string, 0, len(mv.feedItems))
-	offsets := make([]int, len(mv.feedItems))
-	lineCount := 0
-
-	for idx, item := range mv.feedItems {
-		offsets[idx] = lineCount
-		var rendered string
-		switch item.kind {
-		case feedItemKindMessage:
-			fm := item.msg
-			snippet := ""
-			if fm.post.RootID != "" && mv.store != nil {
-				snippet = mv.store.GetParentSnippet(fm.post.RootID)
+		for idx, item := range mv.feedItems {
+			offsets[idx] = lineCount
+			var rendered string
+			switch item.kind {
+			case feedItemKindMessage:
+				hasMessages = true
+				fm := item.msg
+				snippet := ""
+				if fm.post.RootID != "" && mv.store != nil {
+					snippet = mv.store.GetParentSnippet(fm.post.RootID)
+				}
+				rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM, mv.isAllActivity)
+				if idx == mv.selectedIdx {
+					rendered = highlightBlock(rendered, mv.width)
+				}
+			case feedItemKindSystem:
+				rendered = item.system
 			}
-			rendered = renderMessageLine(fm.post, fm.senderName, fm.channelName, snippet, mv.fullDateFormat, mv.width, fm.isDM)
-			if idx == mv.selectedIdx {
-				rendered = highlightBlock(rendered, mv.width)
-			}
-		case feedItemKindSystem:
-			rendered = item.system
+			parts = append(parts, rendered)
+			lineCount += strings.Count(rendered, "\n") + 1
 		}
-		parts = append(parts, rendered)
-		lineCount += strings.Count(rendered, "\n") + 1
+
+		mv.lineOffsets = offsets
+		content = strings.Join(parts, "\n")
 	}
 
-	mv.lineOffsets = offsets
 	if mv.ready {
-		mv.vp.SetContent(strings.Join(parts, "\n"))
+		// Bottom-align system-only content (spinner, empty notice) so it
+		// doesn't read as a top-of-feed message.
+		if !hasMessages {
+			contentLines := strings.Count(content, "\n") + 1
+			if padding := mv.vp.Height - contentLines; padding > 0 {
+				content = strings.Repeat("\n", padding) + content
+			}
+		}
+		mv.vp.SetContent(content)
 	}
 	return mv
 }
@@ -303,8 +347,9 @@ func highlightBlock(s string, width int) string {
 // lines, plus an overflow indicator when the text exceeds 3 lines.
 // Thread replies include ↩ in the header and may show a parent snippet.
 // isDM suppresses the channel prefix for direct message channels.
+// isAllActivity controls badge rendering: reply messages receive ⤴︎ only in All Activity mode.
 // fullDateFormat is the Go time layout used when the message is not from today.
-func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet, fullDateFormat string, width int, isDM bool) string {
+func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet, fullDateFormat string, width int, isDM bool, isAllActivity bool) string {
 	msgTime := time.UnixMilli(msg.CreateAt)
 	now := time.Now()
 	var ts string
@@ -340,6 +385,15 @@ func renderMessageLine(msg mattermost.Message, senderName, channelName, snippet,
 		}
 	} else {
 		headerLine = fmt.Sprintf("[%s] #%s  @%s", ts, channelName, senderName)
+	}
+
+	// Append reply count badge for root messages with replies.
+	if msg.RootID == "" && msg.ReplyCount > 0 {
+		headerLine += fmt.Sprintf("  ⤵︎ %d", msg.ReplyCount)
+	}
+	// Append in-thread badge for replies shown in All Activity.
+	if msg.RootID != "" && isAllActivity {
+		headerLine += "  ⤴︎"
 	}
 
 	// Word-wrap the body, accounting for indent, and cap at 3 visible lines.

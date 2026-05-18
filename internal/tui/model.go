@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -87,8 +88,10 @@ type Model struct {
 	activeHeaderBg    string                  // background color for the active panel header
 	fullDateFormat    string                  // Go time layout for dates outside today
 
-	activePage     map[string]int // channelID → next page to load (for infinite scroll)
-	historyLoading bool           // true while a channel history fetch is in flight
+	activePage      map[string]int // channelID → next page to load (for infinite scroll)
+	historyLoading  bool           // true while a channel history fetch is in flight
+	channelMessages string         // "root_only" | "all" — controls reply visibility in channel view
+	spinner         spinner.Model  // animated MiniDot shown while channel history loads
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -119,6 +122,9 @@ func NewModel() Model {
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+
 	return Model{
 		input:         ta,
 		keys:          DefaultKeyMap(),
@@ -127,13 +133,15 @@ func NewModel() Model {
 		channelsWidth: 22,
 		messagesView:  NewMessagesView(nil),
 		activePage:    make(map[string]int),
+		spinner:       sp,
 	}
 }
 
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
 // WebSocket channels, channel list, store, REST client, team ID, channels sidebar width,
-// whether to display the mode indicator in the status bar, and the full-date format
-// used for messages not sent today (Go time layout, e.g. "02.01.2006").
+// whether to display the mode indicator in the status bar, the full-date format
+// used for messages not sent today (Go time layout, e.g. "02.01.2006"), and the
+// channel_messages setting ("root_only" | "all").
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -148,6 +156,7 @@ func NewModelWithHeader(
 	activeHeaderFg string,
 	activeHeaderBg string,
 	fullDateFormat string,
+	channelMessages string,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -190,9 +199,15 @@ func NewModelWithHeader(
 		}
 	}
 
+	if channelMessages == "all" {
+		m.channelMessages = "all"
+	} else {
+		m.channelMessages = "root_only"
+	}
+
 	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
-	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat)
+	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat).SetAllActivity(true)
 	m.registry = buildRegistry(client, teamID)
 
 	return m
@@ -232,6 +247,20 @@ func buildRegistry(client *mattermost.Client, teamID string) *Registry {
 		Description: "Load more message history for the current channel",
 		Execute: func(_ map[string]string) tea.Cmd {
 			return func() tea.Msg { return MsgRequestReload{} }
+		},
+	})
+
+	r.Register(&CommandDef{
+		Name:        "reset",
+		Description: "Clear in-memory caches; /reset db also wipes the database",
+		Args: []ArgSpec{
+			{Name: "target", Description: "db (optional)", Required: false},
+		},
+		Execute: func(args map[string]string) tea.Cmd {
+			if args["target"] == "db" {
+				return func() tea.Msg { return MsgResetDB{} }
+			}
+			return func() tea.Msg { return MsgResetCaches{} }
 		},
 	})
 
@@ -470,19 +499,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusIsError = true
 			return m, nil
 		}
+		// All Activity always shows all messages (no root_only filter here).
+		// Per-channel root_only filtering is applied in MsgChannelHistory.
 		items := make([]feedItem, 0, len(msg.Messages))
 		for _, sm := range msg.Messages {
 			isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
-						ID:        sm.ID,
-						ChannelID: sm.ChannelID,
-						UserID:    sm.UserID,
-						Text:      sm.Text,
-						CreateAt:  sm.CreateAt,
-						RootID:    sm.RootID,
+						ID:         sm.ID,
+						ChannelID:  sm.ChannelID,
+						UserID:     sm.UserID,
+						Text:       sm.Text,
+						CreateAt:   sm.CreateAt,
+						RootID:     sm.RootID,
+						ReplyCount: sm.ReplyCount,
 					},
 					senderName:  sm.SenderName,
 					channelName: sm.ChannelName,
@@ -515,7 +548,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgSystemMessage:
-		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, system: msg.Text})
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, createAt: time.Now().UnixMilli(), system: msg.Text})
 		return m, nil
 
 	case MsgEscTimeout:
@@ -542,6 +575,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if !m.historyLoading {
+			return m, nil
+		}
+		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
+			{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
+		})
+		return m, cmd
+
 	case MsgOpenHelp:
 		return m.openHelp()
 
@@ -549,9 +593,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
 		if msg.ChannelID == "" {
-			// All Activity: show global feed (already in messagesView).
+			// All Activity: rebuild feed from the global in-memory message list
+			// so it reflects messages received while a specific channel was open.
+			m.messagesView = m.messagesView.SetAllActivity(true)
+			if m.store != nil {
+				globalMsgs := m.store.GetMessages()
+				items := make([]feedItem, 0, len(globalMsgs))
+				for _, sm := range globalMsgs {
+					isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
+					items = append(items, feedItem{
+						kind:     feedItemKindMessage,
+						createAt: sm.CreateAt,
+						msg: feedMessage{
+							post: mattermost.Message{
+								ID:         sm.ID,
+								ChannelID:  sm.ChannelID,
+								UserID:     sm.UserID,
+								Text:       sm.Text,
+								CreateAt:   sm.CreateAt,
+								RootID:     sm.RootID,
+								ReplyCount: sm.ReplyCount,
+							},
+							senderName:  sm.SenderName,
+							channelName: sm.ChannelName,
+							isDM:        isDM,
+						},
+					})
+				}
+				m.messagesView = m.messagesView.SetFeedItems(items)
+				m.messagesView = m.messagesView.GotoBottom()
+			}
 			return m, nil
 		}
+		m.messagesView = m.messagesView.SetAllActivity(false)
+		// Clear stale messages immediately so the old channel's feed isn't visible
+		// while the new one loads.
+		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
+			{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
+		})
 		// Load first page of history for this channel.
 		m.historyLoading = true
 		m.activePage[msg.ChannelID] = 0
@@ -559,6 +638,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: channelID} },
 			loadChannelHistoryCmd(m.client, channelID, 0, false),
+			m.spinner.Tick,
 		)
 
 	case MsgChannelHistoryLoading:
@@ -598,6 +678,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				RootID:      p.RootID,
 				SenderName:  name,
 				ChannelName: chName,
+				ReplyCount:  p.ReplyCount,
 			})
 		}
 		if m.store != nil {
@@ -618,16 +699,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		items := make([]feedItem, 0, len(channelMsgs))
 		for _, sm := range channelMsgs {
+			// In root_only mode, skip replies (messages that are part of a thread).
+			if m.channelMessages == "root_only" && sm.RootID != "" {
+				continue
+			}
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
-						ID:        sm.ID,
-						ChannelID: sm.ChannelID,
-						UserID:    sm.UserID,
-						Text:      sm.Text,
-						CreateAt:  sm.CreateAt,
-						RootID:    sm.RootID,
+						ID:         sm.ID,
+						ChannelID:  sm.ChannelID,
+						UserID:     sm.UserID,
+						Text:       sm.Text,
+						CreateAt:   sm.CreateAt,
+						RootID:     sm.RootID,
+						ReplyCount: sm.ReplyCount,
 					},
 					senderName:  sm.SenderName,
 					channelName: sm.ChannelName,
@@ -654,6 +741,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: m.activeChannelID} },
 			loadChannelHistoryCmd(m.client, m.activeChannelID, page, true),
 		)
+
+	case MsgResetCaches:
+		if m.store != nil {
+			m.store.Reset()
+		}
+		m.messagesView = m.messagesView.SetFeedItems(nil)
+		m.statusMsg = "Caches cleared"
+		m.statusIsError = false
+		m.statusGen++
+		return m, clearStatusAfter(3*time.Second, m.statusGen)
+
+	case MsgResetDB:
+		if m.store != nil {
+			m.store.Reset()
+			if err := m.store.DeleteAllMessages(); err != nil {
+				m.statusMsg = fmt.Sprintf("reset db: %v", err)
+				m.statusIsError = true
+				m.statusGen++
+				return m, clearStatusAfter(5*time.Second, m.statusGen)
+			}
+		}
+		m.messagesView = m.messagesView.SetFeedItems(nil)
+		m.statusMsg = "Caches and database cleared"
+		m.statusIsError = false
+		m.statusGen++
+		return m, clearStatusAfter(3*time.Second, m.statusGen)
 
 	case MsgDMNamesResolved:
 		m.channelsView = m.channelsView.ApplyDMNames(msg.Names)
@@ -1113,19 +1226,33 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		RootID:      post.RootID,
 		SenderName:  senderName,
 		ChannelName: channelName,
+		ReplyCount:  post.ReplyCount, // always 0 for a fresh post; incremented separately via IncrementReplyCount
 	}
 
 	if m.store != nil {
 		m.store.AddMessage(sm)
 		// Also add to the per-channel cache.
 		m.store.AddChannelMessages(post.ChannelID, []store.Message{sm}, false)
+		if post.RootID != "" {
+			m.store.IncrementReplyCount(post.RootID)
+		}
+	}
+	// Update the reply count badge in the view regardless of whether the store is present.
+	if post.RootID != "" {
+		m.messagesView = m.messagesView.IncrementReplyCount(post.RootID)
 	}
 
 	isDM := m.channelTypes[post.ChannelID] == "D" || m.channelTypes[post.ChannelID] == "G"
 	// Only add to messages view if: All Activity OR message is in active channel.
-	if m.activeChannelID == "" || post.ChannelID == m.activeChannelID {
+	shouldAdd := m.activeChannelID == "" || post.ChannelID == m.activeChannelID
+	// In root_only channel mode, skip replies in the feed (they only bump the parent badge).
+	if shouldAdd && m.activeChannelID != "" && m.channelMessages == "root_only" && post.RootID != "" {
+		shouldAdd = false
+	}
+	if shouldAdd {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{
-			kind: feedItemKindMessage,
+			kind:     feedItemKindMessage,
+			createAt: post.CreateAt,
 			msg: feedMessage{
 				post:        post,
 				senderName:  senderName,
