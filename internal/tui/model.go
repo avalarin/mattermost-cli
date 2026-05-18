@@ -609,6 +609,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.messagesView = m.messagesView.SetAllActivity(false)
+		// Clear stale messages immediately so the old channel's feed isn't visible
+		// while the new one loads.
+		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
+			{kind: feedItemKindSystem, system: "Loading…"},
+		})
 		// Load first page of history for this channel.
 		m.historyLoading = true
 		m.activePage[msg.ChannelID] = 0
