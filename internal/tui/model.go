@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -90,6 +91,7 @@ type Model struct {
 	activePage      map[string]int // channelID → next page to load (for infinite scroll)
 	historyLoading  bool           // true while a channel history fetch is in flight
 	channelMessages string         // "root_only" | "all" — controls reply visibility in channel view
+	spinner         spinner.Model  // animated MiniDot shown while channel history loads
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -120,6 +122,9 @@ func NewModel() Model {
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	ta.Focus() //nolint:errcheck // Focus returns a Cmd for cursor blink, safe to ignore in NewModel
 
+	sp := spinner.New()
+	sp.Spinner = spinner.MiniDot
+
 	return Model{
 		input:         ta,
 		keys:          DefaultKeyMap(),
@@ -128,6 +133,7 @@ func NewModel() Model {
 		channelsWidth: 22,
 		messagesView:  NewMessagesView(nil),
 		activePage:    make(map[string]int),
+		spinner:       sp,
 	}
 }
 
@@ -569,6 +575,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		if !m.historyLoading {
+			return m, nil
+		}
+		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
+			{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
+		})
+		return m, cmd
+
 	case MsgOpenHelp:
 		return m.openHelp()
 
@@ -612,7 +629,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clear stale messages immediately so the old channel's feed isn't visible
 		// while the new one loads.
 		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
-			{kind: feedItemKindSystem, system: "Loading…"},
+			{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
 		})
 		// Load first page of history for this channel.
 		m.historyLoading = true
@@ -621,6 +638,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: channelID} },
 			loadChannelHistoryCmd(m.client, channelID, 0, false),
+			m.spinner.Tick,
 		)
 
 	case MsgChannelHistoryLoading:
