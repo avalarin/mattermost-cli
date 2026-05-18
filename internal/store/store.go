@@ -216,6 +216,7 @@ func (s *Store) IncrementReplyCount(rootID string) {
 	for channelID, msgs := range s.channelMessages {
 		for i := range msgs {
 			if msgs[i].ID == rootID {
+				// Must index via map key, not the range-copy 'msgs', to mutate in place.
 				s.channelMessages[channelID][i].ReplyCount++
 				break
 			}

@@ -1226,6 +1226,7 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		RootID:      post.RootID,
 		SenderName:  senderName,
 		ChannelName: channelName,
+		ReplyCount:  post.ReplyCount, // always 0 for a fresh post; incremented separately via IncrementReplyCount
 	}
 
 	if m.store != nil {
