@@ -19,7 +19,7 @@ func TestReplyCountBadgeRoot(t *testing.T) {
 		CreateAt:   time.Now().UnixMilli(),
 		ReplyCount: 3,
 	}
-	line := renderMessageLine(msg, "alice", "general", "", "02.01.2006", 120, false, false)
+	line := renderMessageLine(msg, "alice", "general", "", "02.01.2006", 120, false, false, false)
 	if !strings.Contains(line, "⤵︎ 3") {
 		t.Errorf("expected ⤵︎ 3 badge in: %q", line)
 	}
@@ -33,7 +33,7 @@ func TestReplyCountBadgeRootZero(t *testing.T) {
 		Text:      "no replies",
 		CreateAt:  time.Now().UnixMilli(),
 	}
-	line := renderMessageLine(msg, "alice", "general", "", "02.01.2006", 120, false, false)
+	line := renderMessageLine(msg, "alice", "general", "", "02.01.2006", 120, false, false, false)
 	if strings.Contains(line, "⤵︎") {
 		t.Errorf("expected no ⤵︎ badge when ReplyCount=0, got: %q", line)
 	}
@@ -48,7 +48,7 @@ func TestReplyBadgeInAllActivity(t *testing.T) {
 		CreateAt:  time.Now().UnixMilli(),
 		RootID:    "root-1",
 	}
-	line := renderMessageLine(msg, "bob", "general", "", "02.01.2006", 120, false, true)
+	line := renderMessageLine(msg, "bob", "general", "", "02.01.2006", 120, false, true, false)
 	if !strings.Contains(line, "⤴︎") {
 		t.Errorf("expected ⤴︎ badge for reply in All Activity, got: %q", line)
 	}
@@ -64,7 +64,7 @@ func TestNoReplyBadgeInChannelView(t *testing.T) {
 		RootID:   "root-1",
 	}
 	// isAllActivity=false → no ⤴︎ badge
-	line := renderMessageLine(msg, "bob", "general", "", "02.01.2006", 120, false, false)
+	line := renderMessageLine(msg, "bob", "general", "", "02.01.2006", 120, false, false, false)
 	if strings.Contains(line, "⤴︎") {
 		t.Errorf("expected no ⤴︎ badge for reply in channel view, got: %q", line)
 	}

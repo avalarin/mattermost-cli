@@ -528,7 +528,7 @@ func TestFeedRenderReply(t *testing.T) {
 		RootID:   "parent-id",
 	}
 
-	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", "02.01.2006", 120, false, true)
+	line := renderMessageLine(post, "alice", "general", "Hello everyone, how are you doing today?", "02.01.2006", 120, false, true, false)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected thread reply indicator ↩ in line, got: %q", line)
@@ -552,7 +552,7 @@ func TestFeedRenderReplyNoParent(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "bob", "general", "", "02.01.2006", 120, false, true)
+	line := renderMessageLine(post, "bob", "general", "", "02.01.2006", 120, false, true, false)
 
 	if !strings.Contains(line, "↩") {
 		t.Errorf("expected ↩ indicator even without parent snippet, got: %q", line)
@@ -573,7 +573,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "charlie", "random", "", "02.01.2006", 120, false, false)
+	line := renderMessageLine(post, "charlie", "random", "", "02.01.2006", 120, false, false, false)
 
 	if strings.Contains(line, "↩") {
 		t.Errorf("expected no ↩ for top-level message, got: %q", line)
@@ -683,7 +683,7 @@ func TestFeedRenderWordWrap(t *testing.T) {
 		CreateAt: time.Now().UnixMilli(),
 	}
 
-	line := renderMessageLine(post, "dave", "chan", "", "02.01.2006", 40, false, false)
+	line := renderMessageLine(post, "dave", "chan", "", "02.01.2006", 40, false, false, false)
 
 	lines := strings.Split(line, "\n")
 	// header line + up to 3 body lines + optional ⌄⌄⌄ = at most 5 lines
@@ -1144,6 +1144,128 @@ func TestIncrementReplyCountOnWSPost(t *testing.T) {
 	viewAfter := m.messagesView.View()
 	if !strings.Contains(viewAfter, "⤵︎ 1") {
 		t.Errorf("expected ⤵︎ 1 badge after reply WS event, got: %q", viewAfter)
+	}
+}
+
+// TestEnterOpensThread: Enter on a selected message in ModeMessages opens the thread popup.
+func TestEnterOpensThread(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Put a message in the feed.
+	m.messagesView = m.messagesView.AddFeedItem(feedItem{
+		kind:     feedItemKindMessage,
+		createAt: 1000,
+		msg: feedMessage{
+			post:        mattermost.Message{ID: "msg1", Text: "hello", CreateAt: 1000},
+			senderName:  "alice",
+			channelName: "general",
+		},
+	})
+
+	// Go to ModeMessages and select last.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlJ})
+	if m.mode != ModeMessages {
+		t.Fatalf("expected ModeMessages, got %v", m.mode)
+	}
+
+	// Simulate receiving MsgThreadLoaded (because loadThreadCmd is async).
+	m2, _ := m.Update(MsgThreadLoaded{
+		RootID:   "msg1",
+		Messages: []mattermost.Message{{ID: "msg1", Text: "hello", CreateAt: 1000}},
+	})
+	m = mustModel(t, m2)
+
+	if m.threadPopup == nil {
+		t.Fatal("expected threadPopup != nil after MsgThreadLoaded")
+	}
+	if m.mode != ModeThread {
+		t.Errorf("expected ModeThread, got %v", m.mode)
+	}
+	if m.openThreadRootID != "msg1" {
+		t.Errorf("openThreadRootID = %q, want %q", m.openThreadRootID, "msg1")
+	}
+}
+
+// TestEscClosesThread: Esc from ModeThread closes the popup and returns to ModeMessages.
+func TestEscClosesThread(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	// Open thread popup via MsgThreadLoaded.
+	m2, _ := m.Update(MsgThreadLoaded{
+		RootID:   "msg1",
+		Messages: []mattermost.Message{{ID: "msg1", Text: "hello", CreateAt: 1000}},
+	})
+	m = mustModel(t, m2)
+	if m.mode != ModeThread {
+		t.Fatalf("expected ModeThread after MsgThreadLoaded")
+	}
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.threadPopup != nil {
+		t.Error("expected threadPopup == nil after Esc")
+	}
+	if m.mode != ModeMessages {
+		t.Errorf("expected ModeMessages after Esc, got %v", m.mode)
+	}
+}
+
+// TestCtrlBFromThreadGoesToInput: Ctrl+B → ↓ from ModeThread goes to ModeInput, popup stays.
+func TestCtrlBFromThreadGoesToInput(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	m2, _ := m.Update(MsgThreadLoaded{
+		RootID:   "msg1",
+		Messages: []mattermost.Message{{ID: "msg1", Text: "hello", CreateAt: 1000}},
+	})
+	m = mustModel(t, m2)
+	if m.mode != ModeThread {
+		t.Fatalf("expected ModeThread")
+	}
+
+	// Ctrl+B activates prefix.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyCtrlB})
+	if !m.prefixPending {
+		t.Fatal("expected prefixPending after Ctrl+B")
+	}
+
+	// ↓ should go to ModeInput.
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyDown})
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after Ctrl+B→↓, got %v", m.mode)
+	}
+	// Popup should still be open.
+	if m.threadPopup == nil {
+		t.Error("expected threadPopup != nil after Ctrl+B→↓")
+	}
+}
+
+// TestThreadRKeyInsertsReply: r in ModeThread inserts "/reply" in input and switches to ModeInput.
+func TestThreadRKeyInsertsReply(t *testing.T) {
+	m := NewModel()
+	m = initModel(t, m)
+
+	m2, _ := m.Update(MsgThreadLoaded{
+		RootID:   "root1",
+		Messages: []mattermost.Message{{ID: "root1", Text: "hello", CreateAt: 1000}},
+	})
+	m = mustModel(t, m2)
+	if m.mode != ModeThread {
+		t.Fatalf("expected ModeThread")
+	}
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	if m.mode != ModeInput {
+		t.Errorf("expected ModeInput after r, got %v", m.mode)
+	}
+	if m.input.Value() != "/reply" {
+		t.Errorf("input = %q, want %q", m.input.Value(), "/reply")
+	}
+	// Popup should still be open.
+	if m.threadPopup == nil {
+		t.Error("expected threadPopup != nil after r")
 	}
 }
 

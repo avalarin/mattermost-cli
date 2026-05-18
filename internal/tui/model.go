@@ -37,6 +37,8 @@ const (
 	ModeHelp
 	// ModeChannels is the channels sidebar navigation mode.
 	ModeChannels
+	// ModeThread is the thread popup mode: thread overlay is active.
+	ModeThread
 )
 
 const (
@@ -92,6 +94,10 @@ type Model struct {
 	historyLoading  bool           // true while a channel history fetch is in flight
 	channelMessages string         // "root_only" | "all" — controls reply visibility in channel view
 	spinner         spinner.Model  // animated MiniDot shown while channel history loads
+
+	threadPopup      *ThreadPopup // non-nil when thread popup is open
+	openThreadRootID string       // root ID of the currently open thread
+	replyRootID      string       // set by /reply; consumed by next /send
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -251,6 +257,15 @@ func buildRegistry(client *mattermost.Client, teamID string) *Registry {
 	})
 
 	r.Register(&CommandDef{
+		Name:        "reply",
+		Description: "Set reply context for the open thread (next /send will post as a thread reply)",
+		Execute: func(_ map[string]string) tea.Cmd {
+			// Actual behavior handled in executeCommand before registry dispatch.
+			return func() tea.Msg { return MsgCommandResult{Info: "Use /reply in a thread popup (press r)"} }
+		},
+	})
+
+	r.Register(&CommandDef{
 		Name:        "reset",
 		Description: "Clear in-memory caches; /reset db also wipes the database",
 		Args: []ArgSpec{
@@ -301,6 +316,47 @@ func makeSendCmd(client *mattermost.Client, teamID string) func(map[string]strin
 				return MsgCommandResult{Err: errors.New("target must start with # (channel) or @ (user)")}
 			}
 			if _, err := client.SendMessage(channelID, text, ""); err != nil {
+				return MsgCommandResult{Err: err}
+			}
+			return MsgCommandResult{Info: "Sent ✓"}
+		}
+	}
+}
+
+// makeSendReplyCmd is like makeSendCmd but sends with a thread rootID.
+func makeSendReplyCmd(client *mattermost.Client, teamID, rootID string) func(map[string]string) tea.Cmd {
+	return func(args map[string]string) tea.Cmd {
+		return func() tea.Msg {
+			if client == nil {
+				return MsgCommandResult{Err: errors.New("not connected")}
+			}
+			target, text := args["target"], args["text"]
+			var channelID string
+			switch {
+			case strings.HasPrefix(target, "#"):
+				ch, err := client.GetChannelByName(teamID, strings.TrimPrefix(target, "#"))
+				if errors.Is(err, mattermost.ErrChannelNotFound) {
+					return MsgCommandResult{Err: fmt.Errorf("channel not found: %s", strings.TrimPrefix(target, "#"))}
+				}
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				channelID = ch.ID
+			case strings.HasPrefix(target, "@"):
+				username := strings.TrimPrefix(target, "@")
+				user, err := client.GetUserByUsername(username)
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				ch, err := client.FindOrCreateDM(teamID, user.ID)
+				if err != nil {
+					return MsgCommandResult{Err: err}
+				}
+				channelID = ch.ID
+			default:
+				return MsgCommandResult{Err: errors.New("target must start with # (channel) or @ (user)")}
+			}
+			if _, err := client.SendMessage(channelID, text, rootID); err != nil {
 				return MsgCommandResult{Err: err}
 			}
 			return MsgCommandResult{Info: "Sent ✓"}
@@ -370,6 +426,50 @@ func loadChannelHistoryCmd(client *mattermost.Client, channelID string, page int
 			Prepend:   prepend,
 			UserNames: userNames,
 		}
+	}
+}
+
+// loadThreadCmd returns a tea.Cmd that fetches a post thread from REST
+// and batch-resolves author usernames.
+func loadThreadCmd(client *mattermost.Client, postID string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return MsgThreadLoaded{RootID: postID, Err: errors.New("not connected")}
+		}
+		msgs, err := client.GetPostThread(postID)
+		if err != nil {
+			return MsgThreadLoaded{RootID: postID, Err: err}
+		}
+		seen := make(map[string]bool, len(msgs))
+		var ids []string
+		for _, msg := range msgs {
+			if !seen[msg.UserID] {
+				seen[msg.UserID] = true
+				ids = append(ids, msg.UserID)
+			}
+		}
+		var userNames map[string]string
+		if len(ids) > 0 {
+			if users, uerr := client.GetUsersByIDs(ids); uerr == nil {
+				userNames = make(map[string]string, len(users))
+				for id, u := range users {
+					userNames[id] = u.Username
+				}
+			}
+		}
+		// rootID: if the postID is a reply, the true root is its RootID.
+		rootID := postID
+		for _, msg := range msgs {
+			if msg.ID == postID && msg.RootID != "" {
+				rootID = msg.RootID
+				break
+			}
+			if msg.RootID == "" {
+				rootID = msg.ID
+				break
+			}
+		}
+		return MsgThreadLoaded{RootID: rootID, Messages: msgs, UserNames: userNames}
 	}
 }
 
@@ -728,6 +828,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case MsgThreadLoaded:
+		if !m.ready {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.statusMsg = "Failed to load thread: " + msg.Err.Error()
+			m.statusIsError = true
+			m.statusGen++
+			return m, clearStatusAfter(3*time.Second, m.statusGen)
+		}
+		m.openThreadRootID = msg.RootID
+		items := make([]feedItem, 0, len(msg.Messages))
+		for _, p := range msg.Messages {
+			name := msg.UserNames[p.UserID]
+			if name == "" {
+				name = p.UserID
+			}
+			chName := m.channels[p.ChannelID]
+			if chName == "" {
+				chName = p.ChannelID
+			}
+			isDM := m.channelTypes[p.ChannelID] == "D" || m.channelTypes[p.ChannelID] == "G"
+			items = append(items, feedItem{
+				kind:     feedItemKindMessage,
+				createAt: p.CreateAt,
+				msg: feedMessage{
+					post:        p,
+					senderName:  name,
+					channelName: chName,
+					isDM:        isDM,
+				},
+			})
+		}
+		// Pass the channel display label (e.g. "#general" or "@alice") only for real
+		// channels; empty string when All Activity is active (no specific channel).
+		channelDisplayName := ""
+		if m.activeChannelID != "" {
+			channelDisplayName = m.channelsView.DisplayNameByID(m.activeChannelID)
+		}
+		outerW, outerH := m.threadPopupDimensions()
+		popup := NewThreadPopup(msg.RootID, channelDisplayName)
+		if m.client != nil {
+			popup.CurrentUserID = m.client.CurrentUserID()
+		}
+		popup = popup.SetSize(outerW, outerH)
+		popup = popup.SetFeedItems(items).SelectLast()
+		m.threadPopup = &popup
+		m.mode = ModeThread
+		return m, nil
+
 	case MsgRequestReload:
 		if m.activeChannelID == "" {
 			m.statusMsg = "Not in a channel: use /reload only inside a specific channel"
@@ -807,6 +957,12 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.messagesView = m.messagesView.SetSize(msgsW, feedH)
 	m.ready = true
 
+	if m.threadPopup != nil {
+		outerW, outerH := m.threadPopupDimensions()
+		tp := m.threadPopup.SetSize(outerW, outerH)
+		m.threadPopup = &tp
+	}
+
 	if m.helpReady {
 		_, _, innerW, innerH := m.helpDimensions()
 		m.helpViewport.Width = innerW
@@ -835,6 +991,11 @@ func (m Model) syncInputHeight() Model {
 		}
 		m.channelsView = m.channelsView.SetSize(chW, feedH)
 		m.messagesView = m.messagesView.SetSize(msgsW, feedH)
+		if m.threadPopup != nil {
+			outerW, outerH := m.threadPopupDimensions()
+			tp := m.threadPopup.SetSize(outerW, outerH)
+			m.threadPopup = &tp
+		}
 	}
 	return m
 }
@@ -902,6 +1063,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyHelp(msg)
 	case ModeChannels:
 		return m.handleKeyChannels(msg)
+	case ModeThread:
+		return m.handleKeyThread(msg)
 	}
 	return m, nil
 }
@@ -968,6 +1131,12 @@ func (m Model) handleKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
+	case key.Matches(msg, m.keys.Send): // enter → open thread popup
+		if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
+			return m, loadThreadCmd(m.client, item.msg.post.ID)
+		}
+		return m, nil
+
 	case key.Matches(msg, m.keys.Cancel): // esc → back to input; counts as first double-esc press
 		m.mode = ModeInput
 		m.input.Focus() //nolint:errcheck
@@ -1168,6 +1337,21 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Handle /reply specially: sets the reply context for the next /send.
+	if strings.TrimSpace(input) == "/reply" {
+		if m.openThreadRootID != "" && m.threadPopup != nil {
+			m.replyRootID = m.openThreadRootID
+			m.statusMsg = "Reply context set — use /send #channel text to reply"
+			m.statusIsError = false
+			m.statusGen++
+			return m, clearStatusAfter(4*time.Second, m.statusGen)
+		}
+		m.statusMsg = "No thread open — open a thread first (Enter on a message)"
+		m.statusIsError = true
+		m.statusGen++
+		return m, clearStatusAfter(3*time.Second, m.statusGen)
+	}
+
 	result, err := m.registry.Parse(input)
 	if err != nil {
 		switch {
@@ -1189,6 +1373,15 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	// Valid command: clear any stale error immediately so the status bar is fresh.
 	m.statusMsg = ""
 	m.statusIsError = false
+
+	// Inject replyRootID into /send if reply context is set.
+	if result.Def.Name == "send" && m.replyRootID != "" {
+		rootID := m.replyRootID
+		m.replyRootID = "" // consume the context
+		cmd := makeSendReplyCmd(m.client, m.teamID, rootID)(result.Args)
+		return m, cmd
+	}
+
 	return m, result.Def.Execute(result.Args)
 }
 
@@ -1280,7 +1473,13 @@ func (m Model) View() string {
 		return m.renderHelp()
 	}
 
-	body := m.renderBody()
+	var body string
+	if m.threadPopup != nil {
+		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.threadPopup.View())
+	} else {
+		body = m.renderBody()
+	}
+
 	return strings.Join([]string{
 		m.renderHeader(),
 		m.renderDivider(),
@@ -1415,6 +1614,7 @@ func (m Model) renderStatusBar() string {
 		ModeMessages: "[MESSAGES]",
 		ModeChannels: "[CHANNELS]",
 		ModeHelp:     "[HELP]",
+		ModeThread:   "[THREAD]",
 	}
 	badge, hasBadge := modeLabels[m.mode]
 	if !hasBadge {
@@ -1437,6 +1637,22 @@ func (m Model) renderStatusBar() string {
 
 func (m Model) renderInput() string {
 	return m.input.View()
+}
+
+// threadPopupDimensions returns the outer (W, H) for the thread popup.
+func (m Model) threadPopupDimensions() (outerW, outerH int) {
+	outerW = m.width - 4
+	if outerW > 80 {
+		outerW = 80
+	}
+	if outerW < 20 {
+		outerW = 20
+	}
+	outerH = m.feedH
+	if outerH < 6 {
+		outerH = 6
+	}
+	return
 }
 
 // helpDimensions computes the outer and inner dimensions of the help popup.
@@ -1475,6 +1691,80 @@ func (m Model) openHelp() (tea.Model, tea.Cmd) {
 
 func (m Model) closeHelp() (tea.Model, tea.Cmd) {
 	m.mode = m.prevMode
+	return m, nil
+}
+
+func (m Model) handleKeyThread(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.threadPopup == nil {
+		m.mode = ModeMessages
+		return m, nil
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.Cancel): // Esc → close popup, back to messages
+		m.threadPopup = nil
+		m.openThreadRootID = ""
+		m.mode = ModeMessages
+		return m, nil
+
+	case key.Matches(msg, m.keys.Up):
+		tp := m.threadPopup.MoveCursorUp()
+		m.threadPopup = &tp
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		tp := m.threadPopup.MoveCursorDown()
+		m.threadPopup = &tp
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageUp):
+		n := m.threadPopup.PageSize()
+		tp := *m.threadPopup
+		for i := 0; i < n; i++ {
+			tp = tp.MoveCursorUp()
+		}
+		m.threadPopup = &tp
+		return m, nil
+
+	case key.Matches(msg, m.keys.PageDown):
+		n := m.threadPopup.PageSize()
+		tp := *m.threadPopup
+		for i := 0; i < n; i++ {
+			tp = tp.MoveCursorDown()
+		}
+		m.threadPopup = &tp
+		return m, nil
+	}
+
+	// Action keys on the selected message.
+	item, hasItem := m.threadPopup.SelectedItem()
+	if hasItem && item.kind == feedItemKindMessage {
+		switch {
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "r":
+			m.input.SetValue("/reply")
+			m.mode = ModeInput
+			m.input.Focus() //nolint:errcheck
+			return m, nil
+
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "e":
+			if item.msg.post.UserID == m.threadPopup.CurrentUserID {
+				m.input.SetValue("/edit " + item.msg.post.Text)
+				m.mode = ModeInput
+				m.input.Focus() //nolint:errcheck
+			}
+			return m, nil
+
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "d":
+			if item.msg.post.UserID == m.threadPopup.CurrentUserID {
+				m.statusMsg = "Delete: not implemented yet"
+				m.statusIsError = false
+				m.statusGen++
+				return m, clearStatusAfter(3*time.Second, m.statusGen)
+			}
+			return m, nil
+		}
+	}
+
 	return m, nil
 }
 

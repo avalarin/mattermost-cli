@@ -220,6 +220,28 @@ func (c *Client) GetChannelPosts(channelID string, page, perPage int) ([]Message
 	return msgs, nil
 }
 
+// GetPostThread retrieves all posts in a thread, returning them in chronological order (oldest first).
+// The rootID is the ID of the root message. The Mattermost v4 API returns a PostList
+// with "order" (newest-first) and "posts" map, same shape as GetChannelPosts.
+func (c *Client) GetPostThread(rootID string) ([]Message, error) {
+	type postList struct {
+		Posts map[string]Message `json:"posts"`
+		Order []string           `json:"order"`
+	}
+	var pl postList
+	if err := c.get(fmt.Sprintf("/posts/%s/thread", rootID), &pl); err != nil {
+		return nil, err
+	}
+	msgs := make([]Message, 0, len(pl.Order))
+	for i := len(pl.Order) - 1; i >= 0; i-- {
+		id := pl.Order[i]
+		if msg, ok := pl.Posts[id]; ok {
+			msgs = append(msgs, msg)
+		}
+	}
+	return msgs, nil
+}
+
 // SendMessage sends a message to a channel. Set rootID to post as a thread reply.
 func (c *Client) SendMessage(channelID, text, rootID string) (*Message, error) {
 	body := struct {

@@ -187,6 +187,43 @@ func TestGetChannelPosts_Pagination(t *testing.T) {
 	}
 }
 
+func TestGetPostThread_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/posts/root1/thread" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"order": []string{"reply1", "root1"},
+			"posts": map[string]interface{}{
+				"root1":  map[string]interface{}{"id": "root1", "message": "root", "user_id": "u1", "create_at": 1000, "root_id": "", "reply_count": 1},
+				"reply1": map[string]interface{}{"id": "reply1", "message": "reply", "user_id": "u2", "create_at": 2000, "root_id": "root1", "reply_count": 0},
+			},
+		})
+	}))
+
+	msgs, err := client.GetPostThread("root1")
+	if err != nil {
+		t.Fatalf("GetPostThread() error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	// Chronological order: root first, then reply.
+	if msgs[0].ID != "root1" {
+		t.Errorf("msgs[0].ID = %q, want %q", msgs[0].ID, "root1")
+	}
+	if msgs[1].ID != "reply1" {
+		t.Errorf("msgs[1].ID = %q, want %q", msgs[1].ID, "reply1")
+	}
+	if msgs[0].ReplyCount != 1 {
+		t.Errorf("msgs[0].ReplyCount = %d, want 1", msgs[0].ReplyCount)
+	}
+	if msgs[1].RootID != "root1" {
+		t.Errorf("msgs[1].RootID = %q, want %q", msgs[1].RootID, "root1")
+	}
+}
+
 func TestMessageIsReply(t *testing.T) {
 	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]interface{}{

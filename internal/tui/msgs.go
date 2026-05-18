@@ -86,3 +86,11 @@ type MsgResetCaches struct{}
 
 // MsgResetDB signals that the database should be wiped in addition to in-memory caches.
 type MsgResetDB struct{}
+
+// MsgThreadLoaded carries the result of a thread REST load.
+type MsgThreadLoaded struct {
+	RootID    string
+	Messages  []mattermost.Message
+	UserNames map[string]string // userID → resolved username
+	Err       error
+}
