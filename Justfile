@@ -18,5 +18,5 @@ check: build vet test lint
 run *args:
     go run ./cmd/mattermost-cli {{args}}
 
-dev:
-    go run ./cmd/mattermost-cli --config config.dev.toml
+dev: build
+    ./mattermost-cli --config config.dev.toml
