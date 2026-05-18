@@ -67,6 +67,8 @@ type Model struct {
 	escGen        int  // incremented on each Esc press to invalidate stale MsgEscTimeout
 	ctrlCPending  bool // true after first Ctrl+C press, waiting for second
 	ctrlCGen      int  // incremented on each Ctrl+C press to invalidate stale MsgCtrlCTimeout
+	prefixPending bool // true after Ctrl+B press, waiting for arrow key
+	prefixGen     int  // incremented on each Ctrl+B press to invalidate stale MsgPrefixTimeout
 	prevMode      Mode           // mode before help popup opened, restored on close
 	helpViewport  viewport.Model // scrollable popup content
 	helpReady     bool           // whether helpViewport has been initialized
@@ -483,7 +485,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, sm := range msg.Messages {
 			isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
 						ID:         sm.ID,
@@ -525,7 +528,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgSystemMessage:
-		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, system: msg.Text})
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, createAt: time.Now().UnixMilli(), system: msg.Text})
 		return m, nil
 
 	case MsgEscTimeout:
@@ -544,6 +547,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case MsgPrefixTimeout:
+		if msg.Gen == m.prefixGen && m.prefixPending {
+			m.prefixPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+		}
+		return m, nil
+
 	case MsgOpenHelp:
 		return m.openHelp()
 
@@ -551,8 +562,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
 		if msg.ChannelID == "" {
-			// All Activity: show global feed (already in messagesView).
+			// All Activity: rebuild feed from the global in-memory message list
+			// so it reflects messages received while a specific channel was open.
 			m.messagesView = m.messagesView.SetAllActivity(true)
+			if m.store != nil {
+				globalMsgs := m.store.GetMessages()
+				items := make([]feedItem, 0, len(globalMsgs))
+				for _, sm := range globalMsgs {
+					isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
+					items = append(items, feedItem{
+						kind:     feedItemKindMessage,
+						createAt: sm.CreateAt,
+						msg: feedMessage{
+							post: mattermost.Message{
+								ID:         sm.ID,
+								ChannelID:  sm.ChannelID,
+								UserID:     sm.UserID,
+								Text:       sm.Text,
+								CreateAt:   sm.CreateAt,
+								RootID:     sm.RootID,
+								ReplyCount: sm.ReplyCount,
+							},
+							senderName:  sm.SenderName,
+							channelName: sm.ChannelName,
+							isDM:        isDM,
+						},
+					})
+				}
+				m.messagesView = m.messagesView.SetFeedItems(items)
+				m.messagesView = m.messagesView.GotoBottom()
+			}
 			return m, nil
 		}
 		m.messagesView = m.messagesView.SetAllActivity(false)
@@ -628,7 +667,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				continue
 			}
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
 						ID:         sm.ID,
@@ -745,6 +785,51 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.CtrlC) {
 		return m.handleCtrlC()
 	}
+
+	// Prefix mode: Ctrl+B was pressed, waiting for an arrow key.
+	// Not active in ModeHelp to keep the help popup unaffected.
+	if m.mode != ModeHelp {
+		if m.prefixPending {
+			m.prefixPending = false
+			m.statusMsg = ""
+			m.statusIsError = false
+			switch {
+			case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Right):
+				m.mode = ModeMessages
+				m.input.Blur()
+				m.messagesView = m.messagesView.SelectLast()
+				if m.ready {
+					m.messagesView = m.messagesView.rerenderFeed()
+				}
+				return m, nil
+			case key.Matches(msg, m.keys.Down):
+				m.mode = ModeInput
+				m.input.Focus() //nolint:errcheck
+				return m, nil
+			case key.Matches(msg, m.keys.Left):
+				m.mode = ModeChannels
+				m.input.Blur()
+				return m, nil
+			default:
+				// Non-arrow key cancels prefix mode; process the key normally.
+			}
+		}
+
+		// Activate prefix mode on Ctrl+B.
+		if key.Matches(msg, m.keys.Prefix) {
+			m.prefixPending = true
+			m.prefixGen++
+			gen := m.prefixGen
+			m.statusGen++
+			m.statusMsg = "Ctrl+B — press ↑/↓/←/→ to navigate"
+			m.statusIsError = false
+			return m, func() tea.Msg {
+				time.Sleep(2 * time.Second)
+				return MsgPrefixTimeout{Gen: gen}
+			}
+		}
+	}
+
 	switch m.mode {
 	case ModeInput:
 		return m.handleKeyInput(msg)
@@ -838,11 +923,6 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → back to input
-		m.mode = ModeInput
-		m.input.Focus() //nolint:errcheck
-		return m, nil
-
 	case key.Matches(msg, m.keys.FocusChannels): // ctrl+l → focus channels
 		m.mode = ModeChannels
 		return m, nil
@@ -922,11 +1002,6 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Cancel): // esc → input
-		m.mode = ModeInput
-		m.input.Focus() //nolint:errcheck
-		return m, nil
-
-	case key.Matches(msg, m.keys.FocusInput): // ctrl+b → input
 		m.mode = ModeInput
 		m.input.Focus() //nolint:errcheck
 		return m, nil
@@ -1112,7 +1187,8 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	}
 	if shouldAdd {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{
-			kind: feedItemKindMessage,
+			kind:     feedItemKindMessage,
+			createAt: post.CreateAt,
 			msg: feedMessage{
 				post:        post,
 				senderName:  senderName,
