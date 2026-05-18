@@ -592,7 +592,7 @@ func TestFeedRenderNormalMessage(t *testing.T) {
 // testModelWithClient builds a Model wired to the given client and initializes the viewport.
 func testModelWithClient(t *testing.T, client *mattermost.Client, teamID string) Model {
 	t.Helper()
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, client, teamID, 22, false, "15", "237", "", "root_only", 70)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return mustModel(t, updated)
 }
@@ -774,7 +774,7 @@ func TestCtrlCWorksInModeMessages(t *testing.T) {
 
 // TestHelpPopupOpens: /help with no args opens ModeHelp.
 func TestHelpPopupOpens(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 
 	// Type "/help" and press Enter.
@@ -905,7 +905,7 @@ func TestChannelSelectLoadsHistory(t *testing.T) {
 
 // TestReloadCommandNoChannel verifies that /reload without an active channel yields an error status.
 func TestReloadCommandNoChannel(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	// activeChannelID is "" by default (All Activity).
 
@@ -971,7 +971,7 @@ func TestReloadCommandActiveChannel(t *testing.T) {
 
 // TestMsgChannelHistoryUpdatesView verifies that MsgChannelHistory updates the messages view.
 func TestMsgChannelHistoryUpdatesView(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 
@@ -997,7 +997,7 @@ func TestMsgChannelHistoryUpdatesView(t *testing.T) {
 
 // TestMessagesViewFilterRoot verifies that replies are excluded from the channel view in root_only mode.
 func TestMessagesViewFilterRoot(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 
@@ -1022,7 +1022,7 @@ func TestMessagesViewFilterRoot(t *testing.T) {
 
 // TestMessagesViewShowAll verifies that replies appear in channel view when channel_messages=all.
 func TestMessagesViewShowAll(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "all")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "all", 70)
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 
@@ -1047,7 +1047,7 @@ func TestMessagesViewShowAll(t *testing.T) {
 
 // TestIncrementReplyCountOnWSPost verifies that a WS reply event increments the parent's badge.
 func TestResetCachesClearsFeed(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 
@@ -1081,7 +1081,7 @@ func TestResetDBClearsFeedAndDB(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	st := store.NewStore(db)
 
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	m.store = st
 
@@ -1108,7 +1108,7 @@ func TestResetDBClearsFeedAndDB(t *testing.T) {
 }
 
 func TestIncrementReplyCountOnWSPost(t *testing.T) {
-	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only")
+	m := NewModelWithHeader(HeaderInfo{}, "", nil, nil, nil, nil, nil, "", 22, false, "15", "237", "", "root_only", 70)
 	m = initModel(t, m)
 	m.activeChannelID = "chan1"
 	m.channels = map[string]string{"chan1": "general"}

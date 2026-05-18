@@ -81,7 +81,7 @@ func main() {
 		}
 	}
 
-	header, status, wsClient, channels, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages := loadStartupState(resolvedConfig)
+	header, status, wsClient, channels, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages, threadPopupWidthPct := loadStartupState(resolvedConfig)
 	if wsClient != nil {
 		wsClient.Start(ctx)
 	}
@@ -93,7 +93,7 @@ func main() {
 		statusCh = wsClient.Status()
 	}
 
-	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages)
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages, threadPopupWidthPct)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -106,12 +106,12 @@ func main() {
 // A missing config file is not a hard failure — the TUI can show a message instead.
 // Returns the header info, status message, WS client, channels, REST client, team ID,
 // channels sidebar width, whether the mode indicator should be shown, active header fg/bg colors,
-// the full date format for messages not from today, and the channel_messages setting.
-func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel, *mattermost.Client, string, int, bool, string, string, string, string) {
+// the full date format for messages not from today, the channel_messages setting, and thread popup width pct.
+func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient, []mattermost.Channel, *mattermost.Client, string, int, bool, string, string, string, string, int) {
 	header := tui.HeaderInfo{Status: mattermost.ConnStatusConnecting}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil, nil, "", 22, true, "15", "237", "02.01.2006", "root_only"
+		return header, "Config file not found. Run with --config path/to/config.toml", nil, nil, nil, "", 22, true, "15", "237", "02.01.2006", "root_only", 70
 	}
 
 	cfg, err := config.Load(path)
@@ -147,5 +147,5 @@ func loadStartupState(path string) (tui.HeaderInfo, string, *mattermost.WSClient
 	}
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
-	return header, "", wsClient, channels, client, teamID, cfg.UI.ChannelsWidth, cfg.UI.ShowModeIndicator, cfg.Colors.ActiveHeaderFg, cfg.Colors.ActiveHeaderBg, cfg.UI.FullDateFormat, cfg.UI.ChannelMessages
+	return header, "", wsClient, channels, client, teamID, cfg.UI.ChannelsWidth, cfg.UI.ShowModeIndicator, cfg.Colors.ActiveHeaderFg, cfg.Colors.ActiveHeaderBg, cfg.UI.FullDateFormat, cfg.UI.ChannelMessages, cfg.UI.ThreadPopupWidthPct
 }

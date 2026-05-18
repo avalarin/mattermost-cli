@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -65,6 +66,28 @@ func (tp ThreadPopup) SetFeedItems(items []feedItem) ThreadPopup {
 		return items[i].createAt < items[j].createAt
 	})
 	tp.feedItems = items
+	return tp.rerenderFeed()
+}
+
+// SelectByID selects the feedItem whose post ID matches postID.
+// Falls back to SelectLast if not found.
+func (tp ThreadPopup) SelectByID(postID string) ThreadPopup {
+	for i, item := range tp.feedItems {
+		if item.kind == feedItemKindMessage && item.msg.post.ID == postID {
+			tp.selectedIdx = i
+			tp = tp.rerenderFeed()
+			return tp.scrollToSelected()
+		}
+	}
+	return tp.SelectLast()
+}
+
+// AddFeedItem inserts a new feed item in chronological order and rerenders.
+func (tp ThreadPopup) AddFeedItem(item feedItem) ThreadPopup {
+	i := sort.Search(len(tp.feedItems), func(j int) bool {
+		return tp.feedItems[j].createAt > item.createAt
+	})
+	tp.feedItems = slices.Insert(tp.feedItems, i, item)
 	return tp.rerenderFeed()
 }
 

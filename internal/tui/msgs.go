@@ -89,8 +89,9 @@ type MsgResetDB struct{}
 
 // MsgThreadLoaded carries the result of a thread REST load.
 type MsgThreadLoaded struct {
-	RootID    string
-	Messages  []mattermost.Message
-	UserNames map[string]string // userID → resolved username
-	Err       error
+	RootID         string
+	Messages       []mattermost.Message
+	UserNames      map[string]string // userID → resolved username
+	SelectedPostID string            // post ID to highlight on open (the one Enter was pressed on)
+	Err            error
 }

@@ -95,9 +95,10 @@ type Model struct {
 	channelMessages string         // "root_only" | "all" — controls reply visibility in channel view
 	spinner         spinner.Model  // animated MiniDot shown while channel history loads
 
-	threadPopup      *ThreadPopup // non-nil when thread popup is open
-	openThreadRootID string       // root ID of the currently open thread
-	replyRootID      string       // set by /reply; consumed by next /send
+	threadPopup         *ThreadPopup // non-nil when thread popup is open
+	openThreadRootID    string       // root ID of the currently open thread
+	replyRootID         string       // set by /reply; consumed by next /send
+	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -163,6 +164,7 @@ func NewModelWithHeader(
 	activeHeaderBg string,
 	fullDateFormat string,
 	channelMessages string,
+	threadPopupWidthPct int,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -209,6 +211,12 @@ func NewModelWithHeader(
 		m.channelMessages = "all"
 	} else {
 		m.channelMessages = "root_only"
+	}
+
+	if threadPopupWidthPct > 0 {
+		m.threadPopupWidthPct = threadPopupWidthPct
+	} else {
+		m.threadPopupWidthPct = 70
 	}
 
 	m.channelsRaw = channels
@@ -431,14 +439,14 @@ func loadChannelHistoryCmd(client *mattermost.Client, channelID string, page int
 
 // loadThreadCmd returns a tea.Cmd that fetches a post thread from REST
 // and batch-resolves author usernames.
-func loadThreadCmd(client *mattermost.Client, postID string) tea.Cmd {
+func loadThreadCmd(client *mattermost.Client, postID string, selectedPostID string) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
-			return MsgThreadLoaded{RootID: postID, Err: errors.New("not connected")}
+			return MsgThreadLoaded{RootID: postID, SelectedPostID: selectedPostID, Err: errors.New("not connected")}
 		}
 		msgs, err := client.GetPostThread(postID)
 		if err != nil {
-			return MsgThreadLoaded{RootID: postID, Err: err}
+			return MsgThreadLoaded{RootID: postID, SelectedPostID: selectedPostID, Err: err}
 		}
 		seen := make(map[string]bool, len(msgs))
 		var ids []string
@@ -469,7 +477,7 @@ func loadThreadCmd(client *mattermost.Client, postID string) tea.Cmd {
 				break
 			}
 		}
-		return MsgThreadLoaded{RootID: rootID, Messages: msgs, UserNames: userNames}
+		return MsgThreadLoaded{RootID: rootID, Messages: msgs, UserNames: userNames, SelectedPostID: selectedPostID}
 	}
 }
 
@@ -873,7 +881,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			popup.CurrentUserID = m.client.CurrentUserID()
 		}
 		popup = popup.SetSize(outerW, outerH)
-		popup = popup.SetFeedItems(items).SelectLast()
+		if msg.SelectedPostID != "" {
+			popup = popup.SetFeedItems(items).SelectByID(msg.SelectedPostID)
+		} else {
+			popup = popup.SetFeedItems(items).SelectLast()
+		}
 		m.threadPopup = &popup
 		m.mode = ModeThread
 		return m, nil
@@ -1133,7 +1145,7 @@ func (m Model) handleKeyMessages(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Send): // enter → open thread popup
 		if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
-			return m, loadThreadCmd(m.client, item.msg.post.ID)
+			return m, loadThreadCmd(m.client, item.msg.post.ID, item.msg.post.ID)
 		}
 		return m, nil
 
@@ -1455,6 +1467,22 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 		})
 	}
 
+	// If a thread popup is open and this post belongs to that thread, add it there too.
+	if m.threadPopup != nil && m.openThreadRootID != "" &&
+		(post.RootID == m.openThreadRootID || post.ID == m.openThreadRootID) {
+		tp := m.threadPopup.AddFeedItem(feedItem{
+			kind:     feedItemKindMessage,
+			createAt: post.CreateAt,
+			msg: feedMessage{
+				post:        post,
+				senderName:  senderName,
+				channelName: channelName,
+				isDM:        isDM,
+			},
+		})
+		m.threadPopup = &tp
+	}
+
 	return m, nil
 }
 
@@ -1641,12 +1669,16 @@ func (m Model) renderInput() string {
 
 // threadPopupDimensions returns the outer (W, H) for the thread popup.
 func (m Model) threadPopupDimensions() (outerW, outerH int) {
-	outerW = m.width - 4
-	if outerW > 80 {
-		outerW = 80
+	pct := m.threadPopupWidthPct
+	if pct <= 0 {
+		pct = 70
 	}
+	outerW = m.width * pct / 100
 	if outerW < 20 {
 		outerW = 20
+	}
+	if outerW > m.width-2 {
+		outerW = m.width - 2
 	}
 	outerH = m.feedH
 	if outerH < 6 {
