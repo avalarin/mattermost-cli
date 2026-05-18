@@ -1350,7 +1350,7 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle /reply specially: sets the reply context for the next /send.
-	if strings.TrimSpace(input) == "/reply" {
+	if text == "/reply" {
 		if m.openThreadRootID != "" && m.threadPopup != nil {
 			m.replyRootID = m.openThreadRootID
 			m.statusMsg = "Reply context set — use /send #channel text to reply"
@@ -1768,6 +1768,7 @@ func (m Model) handleKeyThread(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Cancel): // Esc → close popup, back to messages
 		m.threadPopup = nil
 		m.openThreadRootID = ""
+		m.replyRootID = ""
 		m.mode = ModeMessages
 		return m, nil
 
@@ -1782,20 +1783,12 @@ func (m Model) handleKeyThread(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageUp):
-		n := m.threadPopup.PageSize()
-		tp := *m.threadPopup
-		for i := 0; i < n; i++ {
-			tp = tp.MoveCursorUp()
-		}
+		tp := m.threadPopup.MoveCursorUpN(m.threadPopup.PageSize())
 		m.threadPopup = &tp
 		return m, nil
 
 	case key.Matches(msg, m.keys.PageDown):
-		n := m.threadPopup.PageSize()
-		tp := *m.threadPopup
-		for i := 0; i < n; i++ {
-			tp = tp.MoveCursorDown()
-		}
+		tp := m.threadPopup.MoveCursorDownN(m.threadPopup.PageSize())
 		m.threadPopup = &tp
 		return m, nil
 	}

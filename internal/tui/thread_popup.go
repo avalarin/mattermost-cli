@@ -87,6 +87,10 @@ func (tp ThreadPopup) AddFeedItem(item feedItem) ThreadPopup {
 	i := sort.Search(len(tp.feedItems), func(j int) bool {
 		return tp.feedItems[j].createAt > item.createAt
 	})
+	// Keep selectedIdx pointing at the same item after insertion.
+	if tp.selectedIdx >= 0 && i <= tp.selectedIdx {
+		tp.selectedIdx++
+	}
 	tp.feedItems = slices.Insert(tp.feedItems, i, item)
 	return tp.rerenderFeed()
 }
@@ -125,6 +129,44 @@ func (tp ThreadPopup) MoveCursorDown() ThreadPopup {
 		}
 	}
 	return tp
+}
+
+// MoveCursorUpN moves the selection up by n message items in a single re-render.
+func (tp ThreadPopup) MoveCursorUpN(n int) ThreadPopup {
+	for ; n > 0; n-- {
+		moved := false
+		for i := tp.selectedIdx - 1; i >= 0; i-- {
+			if tp.feedItems[i].kind == feedItemKindMessage {
+				tp.selectedIdx = i
+				moved = true
+				break
+			}
+		}
+		if !moved {
+			break
+		}
+	}
+	tp = tp.rerenderFeed()
+	return tp.scrollToSelected()
+}
+
+// MoveCursorDownN moves the selection down by n message items in a single re-render.
+func (tp ThreadPopup) MoveCursorDownN(n int) ThreadPopup {
+	for ; n > 0; n-- {
+		moved := false
+		for i := tp.selectedIdx + 1; i < len(tp.feedItems); i++ {
+			if tp.feedItems[i].kind == feedItemKindMessage {
+				tp.selectedIdx = i
+				moved = true
+				break
+			}
+		}
+		if !moved {
+			break
+		}
+	}
+	tp = tp.rerenderFeed()
+	return tp.scrollToSelected()
 }
 
 // PageSize returns the number of items to skip per page.
