@@ -1617,37 +1617,7 @@ func (m Model) renderDivider() string {
 }
 
 func (m Model) renderStatusBar() string {
-	msg := m.statusMsg
-	if msg == "" {
-		if m.threadPopup != nil {
-			if item, ok := m.threadPopup.SelectedItem(); ok && item.kind == feedItemKindMessage {
-				preview := item.msg.post.Text
-				if len([]rune(preview)) > 60 {
-					preview = string([]rune(preview)[:60]) + "…"
-				}
-				msg = fmt.Sprintf("[%s] %s  · r reply · e edit · d delete · Esc close", item.msg.senderName, preview)
-			} else {
-				msg = "r reply · e edit · d delete · Esc close"
-			}
-		} else if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
-			preview := item.msg.post.Text
-			if len([]rune(preview)) > 60 {
-				preview = string([]rune(preview)[:60]) + "…"
-			}
-			msg = fmt.Sprintf("[%s] %s  · Enter to open thread · Esc to unselect", item.msg.senderName, preview)
-		} else {
-			msg = "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
-		}
-	}
-	color := lipgloss.Color("241")
-	if m.statusIsError {
-		color = lipgloss.Color("203")
-	}
-
-	if !m.showModeIndicator {
-		return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
-	}
-
+	// Compute badge first so we know the actual width available for the message.
 	modeLabels := map[Mode]string{
 		ModeMessages: "[MESSAGES]",
 		ModeChannels: "[CHANNELS]",
@@ -1655,22 +1625,72 @@ func (m Model) renderStatusBar() string {
 		ModeThread:   "[THREAD]",
 	}
 	badge, hasBadge := modeLabels[m.mode]
+	if !m.showModeIndicator {
+		hasBadge = false
+	}
+
+	const badgeSep = " "
+	msgW := m.width
+	if hasBadge {
+		msgW = m.width - len([]rune(badge)) - len([]rune(badgeSep))
+	}
+	if msgW < 0 {
+		msgW = 0
+	}
+
+	msg := m.statusMsg
+	if msg == "" {
+		msg = m.buildStatusMsg(msgW)
+	}
+
+	// Truncate to one line: if the message is still wider than msgW, cut it.
+	if msgW > 0 && len([]rune(msg)) > msgW {
+		msg = string([]rune(msg)[:msgW-1]) + "…"
+	}
+
+	color := lipgloss.Color("241")
+	if m.statusIsError {
+		color = lipgloss.Color("203")
+	}
+
 	if !hasBadge {
 		return lipgloss.NewStyle().Width(m.width).Foreground(color).Render(msg)
 	}
 	badgeStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(m.activeHeaderFg))
 	styledBadge := badgeStyle.Render(badge)
-
-	// Reserve space for the badge (plain-text width) so the status message
-	// fills the remaining width without running into ANSI escape sequences.
-	badgePlainW := len([]rune(badge))
-	sep := " "
-	msgW := m.width - badgePlainW - len([]rune(sep))
-	if msgW < 0 {
-		msgW = 0
-	}
 	styledMsg := lipgloss.NewStyle().Width(msgW).Foreground(color).Render(msg)
-	return styledBadge + sep + styledMsg
+	return styledBadge + badgeSep + styledMsg
+}
+
+// buildStatusMsg returns the context string for the status bar when there is no
+// explicit status message. It receives the available display width so it can
+// truncate the message preview to exactly fit one line.
+func (m Model) buildStatusMsg(availW int) string {
+	fitPreview := func(sender, text, suffix string) string {
+		// "[sender] " + preview + suffix must fit in availW runes.
+		prefix := fmt.Sprintf("[%s] ", sender)
+		fixed := len([]rune(prefix)) + len([]rune(suffix))
+		previewW := availW - fixed
+		runes := []rune(text)
+		if previewW <= 0 {
+			return suffix
+		}
+		if len(runes) > previewW {
+			text = string(runes[:previewW-1]) + "…"
+		}
+		return prefix + text + suffix
+	}
+
+	if m.threadPopup != nil {
+		if item, ok := m.threadPopup.SelectedItem(); ok && item.kind == feedItemKindMessage {
+			return fitPreview(item.msg.senderName, item.msg.post.Text, "  · r reply · e edit · d delete · Esc close")
+		}
+		return "r reply · e edit · d delete · Esc close"
+	}
+	if item, ok := m.messagesView.SelectedItem(); ok && item.kind == feedItemKindMessage {
+		return fitPreview(item.msg.senderName, item.msg.post.Text, "  · Enter to open thread · Esc to unselect")
+	}
+	return "Enter to send · Alt/Opt+Enter for newline · /send #channel · /quit to exit"
 }
 
 func (m Model) renderInput() string {
