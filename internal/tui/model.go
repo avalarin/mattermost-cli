@@ -474,7 +474,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, sm := range msg.Messages {
 			isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
 						ID:        sm.ID,
@@ -515,7 +516,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgSystemMessage:
-		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, system: msg.Text})
+		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, createAt: time.Now().UnixMilli(), system: msg.Text})
 		return m, nil
 
 	case MsgEscTimeout:
@@ -549,7 +550,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
 		if msg.ChannelID == "" {
-			// All Activity: show global feed (already in messagesView).
+			// All Activity: rebuild feed from the global in-memory message list.
+			if m.store != nil {
+				globalMsgs := m.store.GetMessages()
+				items := make([]feedItem, 0, len(globalMsgs))
+				for _, sm := range globalMsgs {
+					isDM := m.channelTypes[sm.ChannelID] == "D" || m.channelTypes[sm.ChannelID] == "G"
+					items = append(items, feedItem{
+						kind:     feedItemKindMessage,
+						createAt: sm.CreateAt,
+						msg: feedMessage{
+							post: mattermost.Message{
+								ID:        sm.ID,
+								ChannelID: sm.ChannelID,
+								UserID:    sm.UserID,
+								Text:      sm.Text,
+								CreateAt:  sm.CreateAt,
+								RootID:    sm.RootID,
+							},
+							senderName:  sm.SenderName,
+							channelName: sm.ChannelName,
+							isDM:        isDM,
+						},
+					})
+				}
+				m.messagesView = m.messagesView.SetFeedItems(items)
+				m.messagesView = m.messagesView.GotoBottom()
+			}
 			return m, nil
 		}
 		// Load first page of history for this channel.
@@ -619,7 +646,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		items := make([]feedItem, 0, len(channelMsgs))
 		for _, sm := range channelMsgs {
 			items = append(items, feedItem{
-				kind: feedItemKindMessage,
+				kind:     feedItemKindMessage,
+				createAt: sm.CreateAt,
 				msg: feedMessage{
 					post: mattermost.Message{
 						ID:        sm.ID,
@@ -1125,7 +1153,8 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	// Only add to messages view if: All Activity OR message is in active channel.
 	if m.activeChannelID == "" || post.ChannelID == m.activeChannelID {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{
-			kind: feedItemKindMessage,
+			kind:     feedItemKindMessage,
+			createAt: post.CreateAt,
 			msg: feedMessage{
 				post:        post,
 				senderName:  senderName,

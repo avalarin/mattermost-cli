@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,9 +33,10 @@ type feedMessage struct {
 
 // feedItem is a union type for the feed: either a chat message or a system-generated line.
 type feedItem struct {
-	kind   feedItemKind
-	msg    feedMessage // valid when kind == feedItemKindMessage
-	system string      // valid when kind == feedItemKindSystem (pre-formatted text)
+	kind     feedItemKind
+	createAt int64       // unix milliseconds; used for stable chronological ordering
+	msg      feedMessage // valid when kind == feedItemKindMessage
+	system   string      // valid when kind == feedItemKindSystem (pre-formatted text)
 }
 
 const bodyIndent = "  "
@@ -91,9 +94,13 @@ func (mv MessagesView) SetSize(w, h int) MessagesView {
 	return mv
 }
 
-// AddFeedItem appends a new feed item, rerenders, and auto-scrolls if atBottom.
+// AddFeedItem inserts a new feed item in chronological order (by createAt),
+// rerenders, and auto-scrolls if atBottom.
 func (mv MessagesView) AddFeedItem(item feedItem) MessagesView {
-	mv.feedItems = append(mv.feedItems, item)
+	i := sort.Search(len(mv.feedItems), func(j int) bool {
+		return mv.feedItems[j].createAt > item.createAt
+	})
+	mv.feedItems = slices.Insert(mv.feedItems, i, item)
 	mv = mv.rerenderFeed()
 	if mv.atBottom {
 		mv.vp.GotoBottom()
@@ -101,8 +108,11 @@ func (mv MessagesView) AddFeedItem(item feedItem) MessagesView {
 	return mv
 }
 
-// SetFeedItems replaces all items and rerenders.
+// SetFeedItems replaces all items, sorts them chronologically, and rerenders.
 func (mv MessagesView) SetFeedItems(items []feedItem) MessagesView {
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].createAt < items[j].createAt
+	})
 	mv.feedItems = items
 	mv = mv.rerenderFeed()
 	return mv

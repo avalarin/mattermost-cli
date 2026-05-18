@@ -112,17 +112,29 @@ func (s *Store) LoadRecent(limit int) ([]Message, error) {
 // AddChannelMessages adds messages to the per-channel cache.
 // prepend=true inserts older messages at the front (infinite scroll).
 // prepend=false appends newer messages at the back (initial load / WS events).
-// Cap per channel: 500 messages total. Also persists each message to the DB (best-effort).
+// Duplicate message IDs are silently dropped. Cap per channel: 500 messages total.
+// Also persists each message to the DB (best-effort).
 func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	existing := s.channelMessages[channelID]
+	seen := make(map[string]struct{}, len(existing))
+	for _, m := range existing {
+		seen[m.ID] = struct{}{}
+	}
+	deduped := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if _, ok := seen[m.ID]; !ok {
+			deduped = append(deduped, m)
+		}
+	}
+
 	var combined []Message
 	if prepend {
-		combined = append(msgs, existing...)
+		combined = append(deduped, existing...)
 	} else {
-		combined = append(existing, msgs...)
+		combined = append(existing, deduped...)
 	}
 	// Cap to channelMessageCap, keeping the appropriate end.
 	// When prepending (older msgs), keep the front (oldest); when appending, keep the tail (newest).
@@ -140,6 +152,16 @@ func (s *Store) AddChannelMessages(channelID string, msgs []Message, prepend boo
 			_ = s.db.InsertMessage(msg)
 		}
 	}
+}
+
+// GetMessages returns all messages from the global in-memory list (oldest first).
+// Used to rebuild the All Activity feed when switching back from a specific channel.
+func (s *Store) GetMessages() []Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]Message, len(s.messages))
+	copy(result, s.messages)
+	return result
 }
 
 // GetChannelMessages returns all messages for a channel in order (oldest first).
