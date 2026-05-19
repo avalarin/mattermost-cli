@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -99,6 +102,11 @@ type Model struct {
 	openThreadRootID    string       // root ID of the currently open thread
 	replyRootID         string       // set by /reply; consumed by next /send
 	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
+
+	unreadCounts map[string]int // channelID → unread message count
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -132,6 +140,7 @@ func NewModel() Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return Model{
 		input:         ta,
 		keys:          DefaultKeyMap(),
@@ -141,6 +150,9 @@ func NewModel() Model {
 		messagesView:  NewMessagesView(nil),
 		activePage:    make(map[string]int),
 		spinner:       sp,
+		unreadCounts:  make(map[string]int),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -222,19 +234,19 @@ func NewModelWithHeader(
 	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
 	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat).SetAllActivity(true)
-	m.registry = buildRegistry(client, teamID)
+	m.registry = buildRegistry(client, teamID, m.cancel)
 
 	return m
 }
 
 // buildRegistry constructs the command registry with all built-in commands.
-func buildRegistry(client *mattermost.Client, teamID string) *Registry {
+func buildRegistry(client *mattermost.Client, teamID string, cancel context.CancelFunc) *Registry {
 	r := NewRegistry()
 
 	r.Register(&CommandDef{
 		Name:        "quit",
 		Description: "Exit the application",
-		Execute:     func(_ map[string]string) tea.Cmd { return tea.Quit },
+		Execute:     func(_ map[string]string) tea.Cmd { cancel(); return tea.Quit },
 	})
 
 	r.Register(&CommandDef{
@@ -494,7 +506,10 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, loadHistory(m.store))
 	}
 	if m.client != nil {
-		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw))
+		cmds = append(cmds, resolveDMNames(m.ctx, m.client, m.channelsRaw, m.store))
+		if len(m.channelsRaw) > 0 {
+			cmds = append(cmds, loadUnreadsCmd(m.client, m.channelsRaw))
+		}
 	}
 	return tea.Batch(cmds...)
 }
@@ -529,12 +544,17 @@ func loadHistory(s *store.Store) tea.Cmd {
 	}
 }
 
-// resolveDMNames fetches usernames for DM channels and returns MsgDMNamesResolved.
-// For each DM channel (Type == "D"), it parses the channel name (userID1__userID2),
-// determines the other user, fetches their profile, and maps channelID -> "@username".
-func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+// resolveDMNames fetches usernames for DM/group-DM channels and returns MsgDMNamesResolved.
+// For Type=="D" it parses the channel name (userID1__userID2) to find the other user.
+// For Type=="G" the display_name from the API may already be populated; if not, we skip
+// (group DM name is an opaque hash, cannot be parsed into user IDs).
+func resolveDMNames(ctx context.Context, client *mattermost.Client, channels []mattermost.Channel, st *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		selfID := client.CurrentUserID()
+		if selfID == "" {
+			slog.Debug("resolveDMNames: selfID empty, skipping DM name resolution")
+			return nil
+		}
 		// Collect unique other-user IDs from DM channels.
 		var ids []string
 		seen := make(map[string]bool)
@@ -546,6 +566,7 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 			// name format: userID1__userID2
 			parts := strings.SplitN(ch.Name, "__", 2)
 			if len(parts) != 2 {
+				slog.Debug("resolveDMNames: unexpected DM channel name format", "name", ch.Name)
 				continue
 			}
 			otherID := parts[0]
@@ -561,23 +582,113 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 		if len(ids) == 0 {
 			return nil
 		}
-		users, err := client.GetUsersByIDs(ids)
-		if err != nil {
-			return nil // silently ignore; IDs remain as fallback
+
+		names := make(map[string]string) // channelID → username
+
+		// Check cache first.
+		if st != nil {
+			cached, err := st.GetCachedUsernames(ids)
+			if err != nil {
+				slog.Debug("resolveDMNames: GetCachedUsernames failed", "err", err)
+			}
+			for otherID, username := range cached {
+				if chID, ok := dmChannelIDs[otherID]; ok {
+					names[chID] = username
+				}
+			}
 		}
-		names := make(map[string]string, len(users))
-		for otherID, u := range users {
-			chID, ok := dmChannelIDs[otherID]
-			if !ok {
+
+		// Build list of IDs not yet resolved from cache.
+		var uncachedIDs []string
+		for _, id := range ids {
+			if chID, ok := dmChannelIDs[id]; ok {
+				if _, resolved := names[chID]; !resolved {
+					uncachedIDs = append(uncachedIDs, id)
+				}
+			}
+		}
+		if len(uncachedIDs) == 0 {
+			return MsgDMNamesResolved{Names: names}
+		}
+
+		// Fetch uncached in batches of 100.
+		const batchSize = 100
+		freshUsers := make(map[string]string) // otherID → username
+		for i := 0; i < len(uncachedIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(uncachedIDs) {
+				end = len(uncachedIDs)
+			}
+			batch := uncachedIDs[i:end]
+			users, err := client.GetUsersByIDs(batch)
+			if errors.Is(err, mattermost.ErrRateLimit) {
+				slog.Debug("resolveDMNames: rate limited, retrying in 20s")
+				select {
+				case <-time.After(20 * time.Second):
+				case <-ctx.Done():
+					return MsgDMNamesResolved{Names: names}
+				}
+				users, err = client.GetUsersByIDs(batch)
+			}
+			if err != nil {
+				slog.Debug("resolveDMNames: GetUsersByIDs batch failed", "err", err, "batch_start", i)
 				continue
 			}
-			name := u.Username
-			if name == "" {
-				name = otherID
+			for otherID, u := range users {
+				name := u.Username
+				if name == "" {
+					name = otherID
+				}
+				freshUsers[otherID] = name
+				if chID, ok := dmChannelIDs[otherID]; ok {
+					names[chID] = name
+				}
 			}
-			names[chID] = name
 		}
+
+		if st != nil && len(freshUsers) > 0 {
+			if err := st.UpsertUsers(freshUsers); err != nil {
+				slog.Debug("resolveDMNames: UpsertUsers failed", "err", err)
+			}
+		}
+
 		return MsgDMNamesResolved{Names: names}
+	}
+}
+
+// loadUnreadsCmd fetches unread counts for all channels in parallel, capped at 10 concurrent requests.
+func loadUnreadsCmd(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+	return func() tea.Msg {
+		const maxConcurrent = 10
+		sem := make(chan struct{}, maxConcurrent)
+		counts := make(map[string]int, len(channels))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, ch := range channels {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				u, err := client.GetChannelUnreads(ch.ID)
+				if err != nil {
+					return
+				}
+				mu.Lock()
+				counts[ch.ID] = u.MsgCount
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		return MsgUnreadsLoaded{Counts: counts}
+	}
+}
+
+// markReadCmd marks a channel as read and returns MsgChannelRead on completion.
+func markReadCmd(client *mattermost.Client, channelID string) tea.Cmd {
+	return func() tea.Msg {
+		_ = client.MarkChannelRead(channelID)
+		return MsgChannelRead{ChannelID: channelID}
 	}
 }
 
@@ -659,6 +770,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.messagesView = m.messagesView.AddFeedItem(feedItem{kind: feedItemKindSystem, createAt: time.Now().UnixMilli(), system: msg.Text})
 		return m, nil
 
+	case MsgUnreadsLoaded:
+		// Take the higher of the two counts: REST value covers history before startup,
+		// WS increments cover messages that arrived while the fetch was in flight.
+		for id, n := range msg.Counts {
+			if n > m.unreadCounts[id] {
+				m.unreadCounts[id] = n
+			}
+		}
+		return m, nil
+
+	case MsgChannelRead:
+		if m.unreadCounts != nil {
+			m.unreadCounts[msg.ChannelID] = 0
+		}
+		return m, nil
+
 	case MsgEscTimeout:
 		if msg.Gen == m.escGen && m.escPending {
 			m.escPending = false
@@ -698,8 +825,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.openHelp()
 
 	case MsgChannelSelected:
+		prevChannelID := m.activeChannelID // capture before overwrite
 		m.activeChannelID = msg.ChannelID
 		m.channelsView = m.channelsView.SetOpenByID(msg.ChannelID)
+
+		// Mark the previous channel as read when switching away from it.
+		var markCmd tea.Cmd
+		if m.client != nil && prevChannelID != "" && prevChannelID != msg.ChannelID {
+			markCmd = markReadCmd(m.client, prevChannelID)
+		}
+
 		if msg.ChannelID == "" {
 			// All Activity: rebuild feed from the global in-memory message list
 			// so it reflects messages received while a specific channel was open.
@@ -731,7 +866,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.messagesView = m.messagesView.SetFeedItems(items)
 				m.messagesView = m.messagesView.GotoBottom()
 			}
-			return m, nil
+			return m, markCmd
 		}
 		m.messagesView = m.messagesView.SetAllActivity(false)
 		// Clear stale messages immediately so the old channel's feed isn't visible
@@ -747,6 +882,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			func() tea.Msg { return MsgChannelHistoryLoading{ChannelID: channelID} },
 			loadChannelHistoryCmd(m.client, channelID, 0, false),
 			m.spinner.Tick,
+			markCmd,
 		)
 
 	case MsgChannelHistoryLoading:
@@ -1084,6 +1220,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleCtrlC implements the double-Ctrl+C exit mechanic.
 func (m Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if m.ctrlCPending {
+		m.cancel()
 		return m, tea.Quit
 	}
 	m.ctrlCPending = true
@@ -1332,6 +1469,7 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	if m.registry == nil {
 		// Fallback for models without a registry (e.g., tests that use NewModel()).
 		if text == "/quit" {
+			m.cancel()
 			return m, tea.Quit
 		}
 		parts := strings.Fields(text)
@@ -1448,6 +1586,16 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 	}
 
 	isDM := m.channelTypes[post.ChannelID] == "D" || m.channelTypes[post.ChannelID] == "G"
+
+	// Increment unread count when a message arrives in a non-active channel.
+	// Only when a specific channel is open (not All Activity), and only for other channels.
+	if m.activeChannelID != "" && post.ChannelID != m.activeChannelID {
+		if m.unreadCounts == nil {
+			m.unreadCounts = make(map[string]int)
+		}
+		m.unreadCounts[post.ChannelID]++
+	}
+
 	// Only add to messages view if: All Activity OR message is in active channel.
 	shouldAdd := m.activeChannelID == "" || post.ChannelID == m.activeChannelID
 	// In root_only channel mode, skip replies in the feed (they only bump the parent badge).
@@ -1521,7 +1669,7 @@ func (m Model) View() string {
 
 // renderBody renders the two-panel body: channels sidebar + vertical divider + messages panel.
 func (m Model) renderBody() string {
-	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveFg(m.activeHeaderFg).SetActiveBg(m.activeHeaderBg).View()
+	channelsPanel := m.channelsView.SetActive(m.mode == ModeChannels).SetActiveFg(m.activeHeaderFg).SetActiveBg(m.activeHeaderBg).SetUnreadCounts(m.unreadCounts).View()
 	msgsHeader := m.renderMessagesHeader()
 	msgsContent := m.messagesView.View()
 

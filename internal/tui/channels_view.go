@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -24,10 +25,11 @@ type ChannelsView struct {
 	openIdx     int // currently open channel (-1 initially, 0 = All Activity)
 	scrollOff   int // index of first visible item
 	width           int
-	height          int    // total height including header
-	active          bool   // true when the channels panel has keyboard focus
-	activeHeaderFg  string // foreground color for header when active
-	activeHeaderBg  string // background color for header when active
+	height          int            // total height including header
+	active          bool           // true when the channels panel has keyboard focus
+	activeHeaderFg  string         // foreground color for header when active
+	activeHeaderBg  string         // background color for header when active
+	unreadCounts    map[string]int // channelID → unread count (set at render time)
 }
 
 // NewChannelsView creates a ChannelsView with All Activity pinned first,
@@ -212,6 +214,18 @@ func (cv ChannelsView) SetActiveBg(color string) ChannelsView {
 	return cv
 }
 
+// SetUnreadCounts sets the unread message counts used when rendering channel labels.
+// The map is copied defensively so future mutations to the caller's map don't affect
+// counts already captured in a ChannelsView value.
+func (cv ChannelsView) SetUnreadCounts(counts map[string]int) ChannelsView {
+	cp := make(map[string]int, len(counts))
+	for k, v := range counts {
+		cp[k] = v
+	}
+	cv.unreadCounts = cp
+	return cv
+}
+
 // ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
 func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
 	cv.items = append([]channelItem(nil), cv.items...)
@@ -262,6 +276,25 @@ func channelLabel(item channelItem) string {
 		label = "[x] " + label
 	}
 	return label
+}
+
+// renderLabel builds the display label for a channel item, appending the unread
+// count badge when count > 0. The result fits within maxWidth runes.
+func (cv ChannelsView) renderLabel(item channelItem, maxWidth int) string {
+	if item.isAll {
+		return truncateLabel("All Activity", maxWidth)
+	}
+	count := cv.unreadCounts[item.channel.ID]
+	if count > 0 {
+		suffix := fmt.Sprintf(" (%d)", count)
+		suffixW := len([]rune(suffix))
+		baseW := maxWidth - suffixW
+		if baseW < 1 {
+			baseW = 1
+		}
+		return truncateLabel(channelLabel(item), baseW) + suffix
+	}
+	return truncateLabel(channelLabel(item), maxWidth)
 }
 
 // truncateLabel truncates label with "…" if it exceeds maxWidth runes.
@@ -319,7 +352,7 @@ func (cv ChannelsView) View() string {
 
 	for i := cv.scrollOff; i < end; i++ {
 		item := cv.items[i]
-		label := truncateLabel(channelLabel(item), maxLabelW)
+		label := cv.renderLabel(item, maxLabelW)
 
 		var line string
 		switch {

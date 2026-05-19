@@ -11,6 +11,7 @@ import (
 var ErrMissingRequiredField = errors.New("missing required field")
 
 type Config struct {
+	Debug  bool `toml:"debug"`
 	Server ServerConfig
 	AI     AIConfig
 	UI     UIConfig

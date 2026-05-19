@@ -245,3 +245,59 @@ func TestMessageIsReply(t *testing.T) {
 		t.Errorf("msg.RootID = %q, want %q", msg.RootID, "parent123")
 	}
 }
+
+func TestGetChannelUnreads_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/users/me/channels/chan1/unread" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"channel_id": "chan1", "msg_count": 3, "mention_count": 1})
+	}))
+
+	u, err := client.GetChannelUnreads("chan1")
+	if err != nil {
+		t.Fatalf("GetChannelUnreads() error: %v", err)
+	}
+	if u.ChannelID != "chan1" {
+		t.Errorf("ChannelID = %q, want %q", u.ChannelID, "chan1")
+	}
+	if u.MsgCount != 3 {
+		t.Errorf("MsgCount = %d, want 3", u.MsgCount)
+	}
+	if u.MentionCount != 1 {
+		t.Errorf("MentionCount = %d, want 1", u.MentionCount)
+	}
+}
+
+func TestGetChannelUnreads_NotFound(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+
+	_, err := client.GetChannelUnreads("missing")
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+}
+
+func TestMarkChannelRead_CallsAPI(t *testing.T) {
+	var capturedPath string
+	var capturedMethod string
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedMethod = r.Method
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	if err := client.MarkChannelRead("chan1"); err != nil {
+		t.Fatalf("MarkChannelRead() error: %v", err)
+	}
+	wantPath := "/api/v4/channels/chan1/members/me/view"
+	if capturedPath != wantPath {
+		t.Errorf("path = %q, want %q", capturedPath, wantPath)
+	}
+	if capturedMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", capturedMethod)
+	}
+}

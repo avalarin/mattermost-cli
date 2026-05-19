@@ -191,6 +191,30 @@ func (s *Store) Reset() {
 	s.channelMessages = make(map[string][]Message)
 }
 
+// MessageStats returns the count of persisted messages and their oldest/newest timestamps.
+// Returns zero values when no database is configured or the table is empty.
+func (s *Store) MessageStats() (count int, oldest, newest time.Time, err error) {
+	if s.db == nil {
+		return
+	}
+	n, minAt, maxAt, dbErr := s.db.GetMessageStats()
+	if dbErr != nil {
+		return 0, time.Time{}, time.Time{}, dbErr
+	}
+	return n, time.UnixMilli(minAt), time.UnixMilli(maxAt), nil
+}
+
+// PruneMessages removes all but the most recent keepRecent messages from the database.
+// No-op when no database is configured.
+func (s *Store) PruneMessages(keepRecent int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	return s.db.PruneMessages(keepRecent)
+}
+
 // DeleteAllMessages wipes all messages from the database.
 // Returns nil when there is no database configured.
 func (s *Store) DeleteAllMessages() error {
@@ -198,6 +222,22 @@ func (s *Store) DeleteAllMessages() error {
 		return nil
 	}
 	return s.db.DeleteAllMessages()
+}
+
+// GetCachedUsernames returns cached usernames for the given user IDs.
+func (s *Store) GetCachedUsernames(ids []string) (map[string]string, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	return s.db.GetCachedUsernames(ids)
+}
+
+// UpsertUsers persists user ID → username mappings to the cache.
+func (s *Store) UpsertUsers(users map[string]string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.UpsertUsers(users)
 }
 
 // IncrementReplyCount increments the reply_count of the message with the given ID

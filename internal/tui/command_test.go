@@ -8,7 +8,7 @@ import (
 
 // buildTestRegistry creates a registry with /quit, /send, and /help for testing.
 func buildTestRegistry() *Registry {
-	return buildRegistry(nil, "team1")
+	return buildRegistry(nil, "team1", func() {})
 }
 
 func TestParseValidSendToChannel(t *testing.T) {

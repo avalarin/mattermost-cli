@@ -50,3 +50,10 @@ type Event struct {
 }
 
 const EventTypePosted = "posted"
+
+// ChannelUnread holds the unread message and mention counts for a channel.
+type ChannelUnread struct {
+	ChannelID    string `json:"channel_id"`
+	MsgCount     int    `json:"msg_count"`
+	MentionCount int    `json:"mention_count"`
+}

@@ -87,6 +87,17 @@ type MsgResetCaches struct{}
 // MsgResetDB signals that the database should be wiped in addition to in-memory caches.
 type MsgResetDB struct{}
 
+// MsgUnreadsLoaded carries the initial unread counts for all channels.
+// Individual channel fetch failures are silently skipped; missing keys mean zero unreads.
+type MsgUnreadsLoaded struct {
+	Counts map[string]int
+}
+
+// MsgChannelRead signals that a channel has been successfully marked as read.
+type MsgChannelRead struct {
+	ChannelID string
+}
+
 // MsgThreadLoaded carries the result of a thread REST load.
 type MsgThreadLoaded struct {
 	RootID         string
