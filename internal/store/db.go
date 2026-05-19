@@ -3,6 +3,8 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -52,6 +54,11 @@ func createSchema(db *sql.DB) error {
 			reply_count  INTEGER NOT NULL DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_messages_create_at ON messages(create_at DESC);
+		CREATE TABLE IF NOT EXISTS users (
+			id         TEXT PRIMARY KEY,
+			username   TEXT NOT NULL,
+			cached_at  INTEGER NOT NULL
+		);
 	`)
 	if err != nil {
 		return err
@@ -150,4 +157,52 @@ func (d *DB) GetMessageStats() (count int, minCreateAt, maxCreateAt int64, err e
 	`)
 	err = row.Scan(&count, &minCreateAt, &maxCreateAt)
 	return
+}
+
+// GetCachedUsernames returns the cached username for each requested ID.
+// IDs not in cache are absent from the result.
+func (d *DB) GetCachedUsernames(ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholder := "?" + strings.Repeat(",?", len(ids)-1)
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := d.db.Query(`SELECT id, username FROM users WHERE id IN (`+placeholder+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	result := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, username string
+		if err := rows.Scan(&id, &username); err != nil {
+			return nil, err
+		}
+		result[id] = username
+	}
+	return result, rows.Err()
+}
+
+// UpsertUsers stores or updates user ID → username mappings in the cache.
+func (d *DB) UpsertUsers(users map[string]string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO users (id, username, cached_at) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	now := time.Now().UnixMilli()
+	for id, username := range users {
+		if _, err := stmt.Exec(id, username, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

@@ -499,7 +499,7 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, loadHistory(m.store))
 	}
 	if m.client != nil {
-		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw))
+		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw, m.store))
 		if len(m.channelsRaw) > 0 {
 			cmds = append(cmds, loadUnreadsCmd(m.client, m.channelsRaw))
 		}
@@ -541,7 +541,7 @@ func loadHistory(s *store.Store) tea.Cmd {
 // For Type=="D" it parses the channel name (userID1__userID2) to find the other user.
 // For Type=="G" the display_name from the API may already be populated; if not, we skip
 // (group DM name is an opaque hash, cannot be parsed into user IDs).
-func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel, st *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		selfID := client.CurrentUserID()
 		if selfID == "" {
@@ -575,32 +575,72 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 		if len(ids) == 0 {
 			return nil
 		}
-		// Fetch in batches of 100 to avoid hitting the API rate limit.
-		const batchSize = 100
-		names := make(map[string]string, len(ids))
-		for i := 0; i < len(ids); i += batchSize {
-			end := i + batchSize
-			if end > len(ids) {
-				end = len(ids)
+
+		names := make(map[string]string) // channelID → username
+
+		// Check cache first.
+		if st != nil {
+			cached, err := st.GetCachedUsernames(ids)
+			if err != nil {
+				slog.Debug("resolveDMNames: GetCachedUsernames failed", "err", err)
 			}
-			batch := ids[i:end]
+			for otherID, username := range cached {
+				if chID, ok := dmChannelIDs[otherID]; ok {
+					names[chID] = username
+				}
+			}
+		}
+
+		// Build list of IDs not yet resolved from cache.
+		var uncachedIDs []string
+		for _, id := range ids {
+			if chID, ok := dmChannelIDs[id]; ok {
+				if _, resolved := names[chID]; !resolved {
+					uncachedIDs = append(uncachedIDs, id)
+				}
+			}
+		}
+		if len(uncachedIDs) == 0 {
+			return MsgDMNamesResolved{Names: names}
+		}
+
+		// Fetch uncached in batches of 100.
+		const batchSize = 100
+		freshUsers := make(map[string]string) // otherID → username
+		for i := 0; i < len(uncachedIDs); i += batchSize {
+			end := i + batchSize
+			if end > len(uncachedIDs) {
+				end = len(uncachedIDs)
+			}
+			batch := uncachedIDs[i:end]
 			users, err := client.GetUsersByIDs(batch)
+			if errors.Is(err, mattermost.ErrRateLimit) {
+				slog.Debug("resolveDMNames: rate limited, retrying in 20s")
+				time.Sleep(20 * time.Second)
+				users, err = client.GetUsersByIDs(batch)
+			}
 			if err != nil {
 				slog.Debug("resolveDMNames: GetUsersByIDs batch failed", "err", err, "batch_start", i)
 				continue
 			}
 			for otherID, u := range users {
-				chID, ok := dmChannelIDs[otherID]
-				if !ok {
-					continue
-				}
 				name := u.Username
 				if name == "" {
 					name = otherID
 				}
-				names[chID] = name
+				freshUsers[otherID] = name
+				if chID, ok := dmChannelIDs[otherID]; ok {
+					names[chID] = name
+				}
 			}
 		}
+
+		if st != nil && len(freshUsers) > 0 {
+			if err := st.UpsertUsers(freshUsers); err != nil {
+				slog.Debug("resolveDMNames: UpsertUsers failed", "err", err)
+			}
+		}
+
 		return MsgDMNamesResolved{Names: names}
 	}
 }

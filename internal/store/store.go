@@ -224,6 +224,22 @@ func (s *Store) DeleteAllMessages() error {
 	return s.db.DeleteAllMessages()
 }
 
+// GetCachedUsernames returns cached usernames for the given user IDs.
+func (s *Store) GetCachedUsernames(ids []string) (map[string]string, error) {
+	if s.db == nil {
+		return nil, nil
+	}
+	return s.db.GetCachedUsernames(ids)
+}
+
+// UpsertUsers persists user ID → username mappings to the cache.
+func (s *Store) UpsertUsers(users map[string]string) error {
+	if s.db == nil {
+		return nil
+	}
+	return s.db.UpsertUsers(users)
+}
+
 // IncrementReplyCount increments the reply_count of the message with the given ID
 // in both the global in-memory list and all per-channel caches, then persists to the DB.
 func (s *Store) IncrementReplyCount(rootID string) {

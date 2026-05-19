@@ -16,6 +16,8 @@ var (
 	ErrChannelNotFound = errors.New("channel not found")
 	// ErrAuthFailed is returned when the API token is invalid or expired.
 	ErrAuthFailed = errors.New("authentication failed: invalid token")
+	// ErrRateLimit is returned when the server responds with HTTP 429 Too Many Requests.
+	ErrRateLimit = errors.New("rate limit exceeded")
 
 	errNotFound = errors.New("not found")
 )
@@ -88,6 +90,8 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 		return ErrAuthFailed
 	case http.StatusNotFound:
 		return errNotFound
+	case http.StatusTooManyRequests:
+		return ErrRateLimit
 	}
 
 	if resp.StatusCode >= 400 {
