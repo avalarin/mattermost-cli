@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,6 +104,9 @@ type Model struct {
 	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
 
 	unreadCounts map[string]int // channelID → unread message count
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // clamp returns v clamped to [lo, hi].
@@ -136,6 +140,7 @@ func NewModel() Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.MiniDot
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return Model{
 		input:         ta,
 		keys:          DefaultKeyMap(),
@@ -146,6 +151,8 @@ func NewModel() Model {
 		activePage:    make(map[string]int),
 		spinner:       sp,
 		unreadCounts:  make(map[string]int),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -227,19 +234,19 @@ func NewModelWithHeader(
 	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
 	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat).SetAllActivity(true)
-	m.registry = buildRegistry(client, teamID)
+	m.registry = buildRegistry(client, teamID, m.cancel)
 
 	return m
 }
 
 // buildRegistry constructs the command registry with all built-in commands.
-func buildRegistry(client *mattermost.Client, teamID string) *Registry {
+func buildRegistry(client *mattermost.Client, teamID string, cancel context.CancelFunc) *Registry {
 	r := NewRegistry()
 
 	r.Register(&CommandDef{
 		Name:        "quit",
 		Description: "Exit the application",
-		Execute:     func(_ map[string]string) tea.Cmd { return tea.Quit },
+		Execute:     func(_ map[string]string) tea.Cmd { cancel(); return tea.Quit },
 	})
 
 	r.Register(&CommandDef{
@@ -499,7 +506,7 @@ func (m Model) Init() tea.Cmd {
 		cmds = append(cmds, loadHistory(m.store))
 	}
 	if m.client != nil {
-		cmds = append(cmds, resolveDMNames(m.client, m.channelsRaw, m.store))
+		cmds = append(cmds, resolveDMNames(m.ctx, m.client, m.channelsRaw, m.store))
 		if len(m.channelsRaw) > 0 {
 			cmds = append(cmds, loadUnreadsCmd(m.client, m.channelsRaw))
 		}
@@ -541,7 +548,7 @@ func loadHistory(s *store.Store) tea.Cmd {
 // For Type=="D" it parses the channel name (userID1__userID2) to find the other user.
 // For Type=="G" the display_name from the API may already be populated; if not, we skip
 // (group DM name is an opaque hash, cannot be parsed into user IDs).
-func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel, st *store.Store) tea.Cmd {
+func resolveDMNames(ctx context.Context, client *mattermost.Client, channels []mattermost.Channel, st *store.Store) tea.Cmd {
 	return func() tea.Msg {
 		selfID := client.CurrentUserID()
 		if selfID == "" {
@@ -616,7 +623,11 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel, st
 			users, err := client.GetUsersByIDs(batch)
 			if errors.Is(err, mattermost.ErrRateLimit) {
 				slog.Debug("resolveDMNames: rate limited, retrying in 20s")
-				time.Sleep(20 * time.Second)
+				select {
+				case <-time.After(20 * time.Second):
+				case <-ctx.Done():
+					return MsgDMNamesResolved{Names: names}
+				}
 				users, err = client.GetUsersByIDs(batch)
 			}
 			if err != nil {
@@ -645,17 +656,20 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel, st
 	}
 }
 
-// loadUnreadsCmd fetches unread counts for all channels in parallel.
+// loadUnreadsCmd fetches unread counts for all channels in parallel, capped at 10 concurrent requests.
 func loadUnreadsCmd(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
 	return func() tea.Msg {
+		const maxConcurrent = 10
+		sem := make(chan struct{}, maxConcurrent)
 		counts := make(map[string]int, len(channels))
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		for _, ch := range channels {
-			ch := ch
+			sem <- struct{}{}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer func() { <-sem }()
 				u, err := client.GetChannelUnreads(ch.ID)
 				if err != nil {
 					return
@@ -757,10 +771,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case MsgUnreadsLoaded:
-		// Merge rather than replace: preserve any WS-incremented counts that arrived
-		// during the parallel startup fetch (W3: avoid clobbering concurrent increments).
+		// Take the higher of the two counts: REST value covers history before startup,
+		// WS increments cover messages that arrived while the fetch was in flight.
 		for id, n := range msg.Counts {
-			if m.unreadCounts[id] == 0 {
+			if n > m.unreadCounts[id] {
 				m.unreadCounts[id] = n
 			}
 		}
@@ -1206,6 +1220,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handleCtrlC implements the double-Ctrl+C exit mechanic.
 func (m Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if m.ctrlCPending {
+		m.cancel()
 		return m, tea.Quit
 	}
 	m.ctrlCPending = true
@@ -1454,6 +1469,7 @@ func (m Model) executeCommand(input string) (tea.Model, tea.Cmd) {
 	if m.registry == nil {
 		// Fallback for models without a registry (e.g., tests that use NewModel()).
 		if text == "/quit" {
+			m.cancel()
 			return m, tea.Quit
 		}
 		parts := strings.Fields(text)

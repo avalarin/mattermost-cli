@@ -1376,7 +1376,7 @@ func TestUnreadClearsOnSwitchToAllActivity(t *testing.T) {
 }
 
 // TestUnreadsLoadedUpdatesModel verifies that MsgUnreadsLoaded populates unreadCounts
-// and merges (not replaces) so WS-incremented counts are preserved.
+// using max(local, server) so neither WS-incremented counts nor server history is lost.
 func TestUnreadsLoadedUpdatesModel(t *testing.T) {
 	m := initModel(t, NewModel())
 
@@ -1390,9 +1390,9 @@ func TestUnreadsLoadedUpdatesModel(t *testing.T) {
 	if m.unreadCounts["ch1"] != 4 {
 		t.Errorf("unreadCounts[ch1] = %d, want 4", m.unreadCounts["ch1"])
 	}
-	// ch2 was pre-incremented to 2 by WS; server says 5 but we keep the local count.
-	if m.unreadCounts["ch2"] != 2 {
-		t.Errorf("unreadCounts[ch2] = %d, want 2 (WS-incremented value preserved)", m.unreadCounts["ch2"])
+	// ch2: WS says 2, server says 5 — take the higher value to preserve server history.
+	if m.unreadCounts["ch2"] != 5 {
+		t.Errorf("unreadCounts[ch2] = %d, want 5 (max of WS=2 and server=5)", m.unreadCounts["ch2"])
 	}
 	if m.unreadCounts["ch3"] != 7 {
 		t.Errorf("unreadCounts[ch3] = %d, want 7", m.unreadCounts["ch3"])
