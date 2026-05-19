@@ -51,6 +51,7 @@ func createSchema(db *sql.DB) error {
 			create_at    INTEGER NOT NULL,
 			reply_count  INTEGER NOT NULL DEFAULT 0
 		);
+		CREATE INDEX IF NOT EXISTS idx_messages_create_at ON messages(create_at DESC);
 	`)
 	if err != nil {
 		return err
@@ -71,13 +72,17 @@ func (d *DB) InsertMessage(msg Message) error {
 	return err
 }
 
-// GetRecentMessages returns up to limit messages ordered by create_at ascending (oldest first).
+// GetRecentMessages returns up to limit of the most recent messages, ordered oldest-first.
 func (d *DB) GetRecentMessages(limit int) ([]Message, error) {
 	rows, err := d.db.Query(`
 		SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count
-		FROM messages
+		FROM (
+			SELECT id, channel_id, user_id, text, sender_name, channel_name, root_id, create_at, reply_count
+			FROM messages
+			ORDER BY create_at DESC
+			LIMIT ?
+		)
 		ORDER BY create_at ASC
-		LIMIT ?
 	`, limit)
 	if err != nil {
 		return nil, err
@@ -118,8 +123,31 @@ func (d *DB) IncrementReplyCount(id string) error {
 	return err
 }
 
+// PruneMessages removes all but the most recent keepRecent messages from the database.
+// This keeps the database from growing unboundedly across sessions.
+func (d *DB) PruneMessages(keepRecent int) error {
+	_, err := d.db.Exec(`
+		DELETE FROM messages
+		WHERE id NOT IN (
+			SELECT id FROM messages ORDER BY create_at DESC LIMIT ?
+		)
+	`, keepRecent)
+	return err
+}
+
 // DeleteAllMessages removes all rows from the messages table.
 func (d *DB) DeleteAllMessages() error {
 	_, err := d.db.Exec(`DELETE FROM messages`)
 	return err
+}
+
+// GetMessageStats returns the total count of stored messages and the oldest/newest
+// create_at timestamps (Unix milliseconds). Returns zeros when the table is empty.
+func (d *DB) GetMessageStats() (count int, minCreateAt, maxCreateAt int64, err error) {
+	row := d.db.QueryRow(`
+		SELECT COUNT(*), COALESCE(MIN(create_at), 0), COALESCE(MAX(create_at), 0)
+		FROM messages
+	`)
+	err = row.Scan(&count, &minCreateAt, &maxCreateAt)
+	return
 }
