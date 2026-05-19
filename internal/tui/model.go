@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -536,12 +537,17 @@ func loadHistory(s *store.Store) tea.Cmd {
 	}
 }
 
-// resolveDMNames fetches usernames for DM channels and returns MsgDMNamesResolved.
-// For each DM channel (Type == "D"), it parses the channel name (userID1__userID2),
-// determines the other user, fetches their profile, and maps channelID -> "@username".
+// resolveDMNames fetches usernames for DM/group-DM channels and returns MsgDMNamesResolved.
+// For Type=="D" it parses the channel name (userID1__userID2) to find the other user.
+// For Type=="G" the display_name from the API may already be populated; if not, we skip
+// (group DM name is an opaque hash, cannot be parsed into user IDs).
 func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
 	return func() tea.Msg {
 		selfID := client.CurrentUserID()
+		if selfID == "" {
+			slog.Debug("resolveDMNames: selfID empty, skipping DM name resolution")
+			return nil
+		}
 		// Collect unique other-user IDs from DM channels.
 		var ids []string
 		seen := make(map[string]bool)
@@ -553,6 +559,7 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 			// name format: userID1__userID2
 			parts := strings.SplitN(ch.Name, "__", 2)
 			if len(parts) != 2 {
+				slog.Debug("resolveDMNames: unexpected DM channel name format", "name", ch.Name)
 				continue
 			}
 			otherID := parts[0]
@@ -568,21 +575,31 @@ func resolveDMNames(client *mattermost.Client, channels []mattermost.Channel) te
 		if len(ids) == 0 {
 			return nil
 		}
-		users, err := client.GetUsersByIDs(ids)
-		if err != nil {
-			return nil // silently ignore; IDs remain as fallback
-		}
-		names := make(map[string]string, len(users))
-		for otherID, u := range users {
-			chID, ok := dmChannelIDs[otherID]
-			if !ok {
+		// Fetch in batches of 100 to avoid hitting the API rate limit.
+		const batchSize = 100
+		names := make(map[string]string, len(ids))
+		for i := 0; i < len(ids); i += batchSize {
+			end := i + batchSize
+			if end > len(ids) {
+				end = len(ids)
+			}
+			batch := ids[i:end]
+			users, err := client.GetUsersByIDs(batch)
+			if err != nil {
+				slog.Debug("resolveDMNames: GetUsersByIDs batch failed", "err", err, "batch_start", i)
 				continue
 			}
-			name := u.Username
-			if name == "" {
-				name = otherID
+			for otherID, u := range users {
+				chID, ok := dmChannelIDs[otherID]
+				if !ok {
+					continue
+				}
+				name := u.Username
+				if name == "" {
+					name = otherID
+				}
+				names[chID] = name
 			}
-			names[chID] = name
 		}
 		return MsgDMNamesResolved{Names: names}
 	}

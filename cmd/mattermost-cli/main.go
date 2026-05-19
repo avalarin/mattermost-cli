@@ -51,6 +51,13 @@ func main() {
 
 	resolvedConfig := resolveConfigPath(*configPath)
 
+	// Allow debug = true in the config file (useful for dev configs).
+	if !*debug {
+		if cfg, err := config.Load(resolvedConfig); err == nil && cfg.Debug {
+			*debug = true
+		}
+	}
+
 	if *debug {
 		f, err := os.OpenFile("debug.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
