@@ -17,6 +17,7 @@ type KeyMap struct {
 	Send          key.Binding // enter
 	Cancel        key.Binding // esc
 	CtrlC         key.Binding // ctrl+c
+	ChannelFilter key.Binding // ctrl+k — open sort/filter popup
 }
 
 // DefaultKeyMap returns the default key bindings.
@@ -75,6 +76,10 @@ func DefaultKeyMap() KeyMap {
 		CtrlC: key.NewBinding(
 			key.WithKeys("ctrl+c"),
 			key.WithHelp("Ctrl+C", "clear"),
+		),
+		ChannelFilter: key.NewBinding(
+			key.WithKeys("ctrl+k"),
+			key.WithHelp("Ctrl+K", "channel sort & filter"),
 		),
 	}
 }

@@ -148,3 +148,80 @@ func TestAllActivityNoBadge(t *testing.T) {
 		}
 	}
 }
+
+func TestWithSortFilter_AllActivityAlwaysFirst(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general", LastPostAt: 100},
+		{ID: "ch2", Name: "backend", LastPostAt: 200},
+	})
+	state := ChannelFilterState{SortOrder: ChannelSortLastMessage}
+	cv = cv.WithSortAndFilter(state, nil)
+	if !cv.items[0].isAll {
+		t.Error("first item should be All Activity regardless of sort")
+	}
+}
+
+func TestWithSortFilter_Alphabetical(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "zzz", DisplayName: "Zzz"},
+		{ID: "ch2", Name: "aaa", DisplayName: "Aaa"},
+	})
+	state := ChannelFilterState{SortOrder: ChannelSortAlphabetical}
+	cv = cv.WithSortAndFilter(state, nil)
+	if cv.items[1].channel.ID != "ch2" {
+		t.Errorf("expected ch2 (Aaa) at index 1, got %q", cv.items[1].channel.ID)
+	}
+	if cv.items[2].channel.ID != "ch1" {
+		t.Errorf("expected ch1 (Zzz) at index 2, got %q", cv.items[2].channel.ID)
+	}
+}
+
+func TestWithSortFilter_LastMessage(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "old", LastPostAt: 100},
+		{ID: "ch2", Name: "newer", LastPostAt: 500},
+		{ID: "ch3", Name: "newest", LastPostAt: 999},
+	})
+	state := ChannelFilterState{SortOrder: ChannelSortLastMessage}
+	cv = cv.WithSortAndFilter(state, nil)
+	if cv.items[1].channel.ID != "ch3" {
+		t.Errorf("expected ch3 (newest) at index 1, got %q", cv.items[1].channel.ID)
+	}
+	if cv.items[3].channel.ID != "ch1" {
+		t.Errorf("expected ch1 (old) at index 3, got %q", cv.items[3].channel.ID)
+	}
+}
+
+func TestWithSortFilter_UnreadOnly(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+		{ID: "ch2", Name: "backend"},
+		{ID: "ch3", Name: "ops"},
+	})
+	unreadCounts := map[string]int{"ch1": 3, "ch2": 0, "ch3": 1}
+	state := ChannelFilterState{SortOrder: ChannelSortAlphabetical, UnreadOnly: true}
+	cv = cv.WithSortAndFilter(state, unreadCounts)
+	if len(cv.items) != 3 {
+		t.Fatalf("expected 3 items (All Activity + ch1 + ch3), got %d", len(cv.items))
+	}
+	for _, item := range cv.items[1:] {
+		if item.channel.ID == "ch2" {
+			t.Error("ch2 with 0 unreads should be hidden")
+		}
+	}
+}
+
+func TestWithSortFilter_UnreadOnlyAllRead(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+		{ID: "ch2", Name: "backend"},
+	})
+	state := ChannelFilterState{SortOrder: ChannelSortAlphabetical, UnreadOnly: true}
+	cv = cv.WithSortAndFilter(state, map[string]int{})
+	if len(cv.items) != 1 {
+		t.Fatalf("expected only All Activity (1 item), got %d", len(cv.items))
+	}
+	if !cv.items[0].isAll {
+		t.Error("the single remaining item should be All Activity")
+	}
+}

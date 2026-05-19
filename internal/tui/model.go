@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -42,6 +41,8 @@ const (
 	ModeChannels
 	// ModeThread is the thread popup mode: thread overlay is active.
 	ModeThread
+	// ModeChannelFilter is the channel sort/filter popup mode.
+	ModeChannelFilter
 )
 
 const (
@@ -103,6 +104,9 @@ type Model struct {
 	replyRootID         string       // set by /reply; consumed by next /send
 	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
 
+	channelFilterPopup *ChannelFilterPopup // non-nil when the sort/filter popup is open
+	channelSortFilter  ChannelFilterState  // currently applied sort/filter state
+
 	unreadCounts map[string]int // channelID → unread message count
 
 	ctx    context.Context
@@ -159,8 +163,9 @@ func NewModel() Model {
 // NewModelWithHeader creates a Model with pre-loaded header info, initial status,
 // WebSocket channels, channel list, store, REST client, team ID, channels sidebar width,
 // whether to display the mode indicator in the status bar, the full-date format
-// used for messages not sent today (Go time layout, e.g. "02.01.2006"), and the
-// channel_messages setting ("root_only" | "all").
+// used for messages not sent today (Go time layout, e.g. "02.01.2006"), the
+// channel_messages setting ("root_only" | "all"), the initial channel sort order
+// ("alphabetical" | "last_message"), and whether to show only unread channels.
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -177,6 +182,8 @@ func NewModelWithHeader(
 	fullDateFormat string,
 	channelMessages string,
 	threadPopupWidthPct int,
+	channelSort string,
+	channelUnreadOnly bool,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -233,6 +240,16 @@ func NewModelWithHeader(
 
 	m.channelsRaw = channels
 	m.channelsView = NewChannelsView(channels)
+
+	sortOrder := ChannelSortAlphabetical
+	if channelSort == "last_message" {
+		sortOrder = ChannelSortLastMessage
+	}
+	m.channelSortFilter = ChannelFilterState{SortOrder: sortOrder, UnreadOnly: channelUnreadOnly}
+	if sortOrder != ChannelSortAlphabetical || channelUnreadOnly {
+		m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, nil)
+	}
+
 	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat).SetAllActivity(true)
 	m.registry = buildRegistry(client, teamID, m.cancel)
 
@@ -656,30 +673,18 @@ func resolveDMNames(ctx context.Context, client *mattermost.Client, channels []m
 	}
 }
 
-// loadUnreadsCmd fetches unread counts for all channels in parallel, capped at 10 concurrent requests.
+// loadUnreadsCmd fetches unread counts for all channels sequentially to avoid
+// triggering Mattermost's rate limiter, which would break concurrent DM name resolution.
 func loadUnreadsCmd(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
 	return func() tea.Msg {
-		const maxConcurrent = 10
-		sem := make(chan struct{}, maxConcurrent)
 		counts := make(map[string]int, len(channels))
-		var mu sync.Mutex
-		var wg sync.WaitGroup
 		for _, ch := range channels {
-			sem <- struct{}{}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer func() { <-sem }()
-				u, err := client.GetChannelUnreads(ch.ID)
-				if err != nil {
-					return
-				}
-				mu.Lock()
-				counts[ch.ID] = u.MsgCount
-				mu.Unlock()
-			}()
+			u, err := client.GetChannelUnreads(ch.ID)
+			if err != nil {
+				continue
+			}
+			counts[ch.ID] = u.MsgCount
 		}
-		wg.Wait()
 		return MsgUnreadsLoaded{Counts: counts}
 	}
 }
@@ -778,11 +783,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.unreadCounts[id] = n
 			}
 		}
+		m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, m.unreadCounts)
 		return m, nil
 
 	case MsgChannelRead:
 		if m.unreadCounts != nil {
 			m.unreadCounts[msg.ChannelID] = 0
+		}
+		if m.channelSortFilter.UnreadOnly {
+			m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, m.unreadCounts)
 		}
 		return m, nil
 
@@ -1158,6 +1167,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleCtrlC()
 	}
 
+	// Ctrl+K opens the channel sort/filter popup from any mode.
+	if key.Matches(msg, m.keys.ChannelFilter) {
+		return m.openChannelFilter()
+	}
+
 	// Prefix mode: Ctrl+B was pressed, waiting for an arrow key.
 	// Not active in ModeHelp to keep the help popup unaffected.
 	if m.mode != ModeHelp {
@@ -1213,6 +1227,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyChannels(msg)
 	case ModeThread:
 		return m.handleKeyThread(msg)
+	case ModeChannelFilter:
+		return m.handleKeyChannelFilter(msg)
 	}
 	return m, nil
 }
@@ -1594,6 +1610,9 @@ func (m Model) handlePostedEvent(evt mattermost.Event) (Model, tea.Cmd) {
 			m.unreadCounts = make(map[string]int)
 		}
 		m.unreadCounts[post.ChannelID]++
+		if m.channelSortFilter.UnreadOnly {
+			m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, m.unreadCounts)
+		}
 	}
 
 	// Only add to messages view if: All Activity OR message is in active channel.
@@ -1650,7 +1669,9 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.threadPopup != nil {
+	if m.channelFilterPopup != nil {
+		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.channelFilterPopup.View())
+	} else if m.threadPopup != nil {
 		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.threadPopup.View())
 	} else {
 		body = m.renderBody()
@@ -1767,10 +1788,11 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	// Compute badge first so we know the actual width available for the message.
 	modeLabels := map[Mode]string{
-		ModeMessages: "[MESSAGES]",
-		ModeChannels: "[CHANNELS]",
-		ModeHelp:     "[HELP]",
-		ModeThread:   "[THREAD]",
+		ModeMessages:      "[MESSAGES]",
+		ModeChannels:      "[CHANNELS]",
+		ModeHelp:          "[HELP]",
+		ModeThread:        "[THREAD]",
+		ModeChannelFilter: "[FILTER]",
 	}
 	badge, hasBadge := modeLabels[m.mode]
 	if !m.showModeIndicator {
@@ -1998,4 +2020,49 @@ func (m Model) renderHelp() string {
 		Render(content)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m Model) openChannelFilter() (tea.Model, tea.Cmd) {
+	outerW := m.width - 4
+	if outerW > 44 {
+		outerW = 44
+	}
+	popup := NewChannelFilterPopup(m.channelSortFilter)
+	popup = popup.SetSize(outerW, 12)
+	m.channelFilterPopup = &popup
+	m.prevMode = m.mode
+	m.mode = ModeChannelFilter
+	return m, nil
+}
+
+func (m Model) closeChannelFilter(apply bool) (tea.Model, tea.Cmd) {
+	if apply && m.channelFilterPopup != nil {
+		m.channelSortFilter = m.channelFilterPopup.Pending()
+		m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, m.unreadCounts)
+	}
+	m.channelFilterPopup = nil
+	m.mode = m.prevMode
+	return m, nil
+}
+
+func (m Model) handleKeyChannelFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.channelFilterPopup == nil {
+		return m, nil
+	}
+	p := *m.channelFilterPopup
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		p = p.MoveUp()
+	case key.Matches(msg, m.keys.Down):
+		p = p.MoveDown()
+	case msg.String() == " ":
+		p = p.Toggle()
+	case key.Matches(msg, m.keys.Send):
+		m.channelFilterPopup = &p
+		return m.closeChannelFilter(true)
+	case key.Matches(msg, m.keys.Cancel):
+		return m.closeChannelFilter(false)
+	}
+	m.channelFilterPopup = &p
+	return m, nil
 }

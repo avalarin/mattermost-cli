@@ -11,11 +11,18 @@ import (
 var ErrMissingRequiredField = errors.New("missing required field")
 
 type Config struct {
-	Debug  bool `toml:"debug"`
-	Server ServerConfig
-	AI     AIConfig
-	UI     UIConfig
-	Colors ColorsConfig
+	Debug    bool `toml:"debug"`
+	Server   ServerConfig
+	AI       AIConfig
+	UI       UIConfig
+	Colors   ColorsConfig
+	Channels ChannelsConfig
+}
+
+// ChannelsConfig holds channel list display preferences.
+type ChannelsConfig struct {
+	Sort       string `toml:"sort"`        // "alphabetical" | "last_message"; default "alphabetical"
+	UnreadOnly bool   `toml:"unread_only"` // default false
 }
 
 // ColorsConfig holds terminal color overrides (256-color ANSI codes or hex RGB).
@@ -81,6 +88,7 @@ func applyDefaults(cfg *Config) {
 	cfg.Colors.ActiveHeaderFg = "15"
 	cfg.AI.Model = "claude-sonnet-4-6"
 	cfg.AI.Enabled = false
+	cfg.Channels.Sort = "alphabetical"
 }
 
 func applyEnv(cfg *Config) {
