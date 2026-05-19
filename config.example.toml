@@ -18,3 +18,7 @@ show_mode_indicator = true
 [colors]
 active_header_bg = "237"      # background of the active panel header; ANSI 256-color or #RRGGBB
 active_header_fg = "15"       # foreground of the active panel header
+
+[channels]
+# sort = "alphabetical"   # "alphabetical" | "last_message"
+# unread_only = false     # when true, hide channels with no unread messages

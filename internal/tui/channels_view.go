@@ -240,6 +240,76 @@ func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
 	return cv
 }
 
+// WithSortAndFilter returns a new ChannelsView with sort order and unread filter applied.
+// All Activity is always pinned at index 0. nil unreadCounts means no filtering.
+func (cv ChannelsView) WithSortAndFilter(state ChannelFilterState, unreadCounts map[string]int) ChannelsView {
+	// Capture open channel ID so we can restore openIdx after reorder.
+	var openChannelID string
+	if cv.openIdx >= 0 && cv.openIdx < len(cv.items) {
+		open := cv.items[cv.openIdx]
+		if !open.isAll {
+			openChannelID = open.channel.ID
+		}
+	}
+
+	var allItem channelItem
+	var rest []channelItem
+	for _, item := range cv.items {
+		if item.isAll {
+			allItem = item
+		} else {
+			rest = append(rest, item)
+		}
+	}
+
+	if state.UnreadOnly {
+		filtered := make([]channelItem, 0, len(rest))
+		for _, item := range rest {
+			if unreadCounts[item.channel.ID] > 0 {
+				filtered = append(filtered, item)
+			}
+		}
+		rest = filtered
+	}
+
+	switch state.SortOrder {
+	case ChannelSortLastMessage:
+		sort.Slice(rest, func(i, j int) bool {
+			return rest[i].channel.LastPostAt > rest[j].channel.LastPostAt
+		})
+	default:
+		sort.Slice(rest, func(i, j int) bool {
+			ni := rest[i].channel.DisplayName
+			if ni == "" {
+				ni = rest[i].channel.Name
+			}
+			nj := rest[j].channel.DisplayName
+			if nj == "" {
+				nj = rest[j].channel.Name
+			}
+			return strings.ToLower(ni) < strings.ToLower(nj)
+		})
+	}
+
+	items := make([]channelItem, 0, len(rest)+1)
+	items = append(items, allItem)
+	items = append(items, rest...)
+	cv.items = items
+	cv.selectedIdx = 0
+	cv.scrollOff = 0
+
+	cv.openIdx = 0
+	if openChannelID != "" {
+		for i, item := range cv.items {
+			if !item.isAll && item.channel.ID == openChannelID {
+				cv.openIdx = i
+				break
+			}
+		}
+	}
+	return cv
+}
+
 // SelectedDisplayName returns the display name of the selected channel
 // ("All Activity" for the aggregate filter).
 func (cv ChannelsView) SelectedDisplayName() string {
