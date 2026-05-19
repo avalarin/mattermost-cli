@@ -255,6 +255,22 @@ func (c *Client) GetChannelUnreads(channelID string) (*ChannelUnread, error) {
 	return &u, nil
 }
 
+// GetMyChannelMembersForTeam fetches all channel memberships for the current user in a team
+// in a single request. The returned map is keyed by channel ID.
+// Each ChannelMember.MsgCount is the number of messages the user has already read;
+// subtract from Channel.TotalMsgCount to get the unread count.
+func (c *Client) GetMyChannelMembersForTeam(teamID string) (map[string]ChannelMember, error) {
+	var members []ChannelMember
+	if err := c.get(fmt.Sprintf("/users/me/teams/%s/channels/members", teamID), &members); err != nil {
+		return nil, err
+	}
+	result := make(map[string]ChannelMember, len(members))
+	for _, m := range members {
+		result[m.ChannelID] = m
+	}
+	return result, nil
+}
+
 // MarkChannelRead marks a channel as read for the current user.
 func (c *Client) MarkChannelRead(channelID string) error {
 	body := struct {

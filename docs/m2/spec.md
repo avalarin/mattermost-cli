@@ -554,9 +554,7 @@ Mark as read (при скролле в дно):
 - `SearchChannels(teamID, query string) ([]Channel, error)` — GET `/teams/{teamId}/channels/search?term=query`
 - `SearchUsers(query string) ([]User, error)` — GET `/users/search` с `{ term: query }`
 
-*Новый `views/search_popup.go` — `SearchPopup`:*
-- Popup по центру экрана (поверх основного контента), input снизу остаётся
-- Ширина: `min(60, total-4)`, высота: `min(20, total_h-6)`
+*Правим уже существующий popup для сортировки и фильтрации:*
 - Структура:
   ```
   ┌─ Search ──────────────────────────────────────┐
@@ -566,7 +564,14 @@ Mark as read (при скролле в дно):
   │   #backend                                    │
   │   @alice                                      │
   ├───────────────────────────────────────────────┤
-  │ ↑↓ navigate · Enter open · Esc close          │
+  │ SORT                                          │
+  │ ○ Alphabetical                                │
+  │ ● Last message                                │
+  │ FILTERS                                       │
+  │ ☐ Unread only                                 │
+  ├───────────────────────────────────────────────┤
+  │ ↑↓ navigate · Space toggle · Enter open/apply │
+  │ Esc close                                     │
   └───────────────────────────────────────────────┘
   ```
 - Поле ввода вверху; список результатов (каналы `#`, потом пользователи `@`); хоткеи внизу

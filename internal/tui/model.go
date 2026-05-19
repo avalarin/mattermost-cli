@@ -524,8 +524,8 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.client != nil {
 		cmds = append(cmds, resolveDMNames(m.ctx, m.client, m.channelsRaw, m.store))
-		if len(m.channelsRaw) > 0 {
-			cmds = append(cmds, loadUnreadsCmd(m.client, m.channelsRaw))
+		if len(m.channelsRaw) > 0 && m.teamID != "" {
+			cmds = append(cmds, loadUnreadsCmd(m.client, m.teamID, m.channelsRaw))
 		}
 	}
 	return tea.Batch(cmds...)
@@ -673,17 +673,33 @@ func resolveDMNames(ctx context.Context, client *mattermost.Client, channels []m
 	}
 }
 
-// loadUnreadsCmd fetches unread counts for all channels sequentially to avoid
-// triggering Mattermost's rate limiter, which would break concurrent DM name resolution.
-func loadUnreadsCmd(client *mattermost.Client, channels []mattermost.Channel) tea.Cmd {
+// loadUnreadsCmd fetches unread counts for all channels in two batch requests:
+// one for channel members (read positions) and one already available via the channel list.
+// This avoids 1-per-channel requests that quickly exhaust the server's rate limit.
+func loadUnreadsCmd(client *mattermost.Client, teamID string, channels []mattermost.Channel) tea.Cmd {
 	return func() tea.Msg {
+		members, err := client.GetMyChannelMembersForTeam(teamID)
+		if err != nil {
+			slog.Debug("loadUnreadsCmd: GetMyChannelMembersForTeam failed", "err", err)
+			return MsgUnreadsLoaded{Counts: make(map[string]int)}
+		}
 		counts := make(map[string]int, len(channels))
 		for _, ch := range channels {
-			u, err := client.GetChannelUnreads(ch.ID)
-			if err != nil {
+			m, ok := members[ch.ID]
+			if !ok {
 				continue
 			}
-			counts[ch.ID] = u.MsgCount
+			unread := int(ch.TotalMsgCount - m.MsgCount)
+			if unread < 0 {
+				unread = 0
+			}
+			// Mentions are always surfaced even if the general unread math rounds to 0.
+			if m.MentionCount > unread {
+				unread = m.MentionCount
+			}
+			if unread > 0 {
+				counts[ch.ID] = unread
+			}
 		}
 		return MsgUnreadsLoaded{Counts: counts}
 	}
@@ -1435,10 +1451,15 @@ func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusGen++
 			return m, clearStatusAfter(3*time.Second, m.statusGen)
 		}
+		prevID := m.activeChannelID
 		var channelID string
 		m.channelsView, channelID = m.channelsView.OpenSelected()
 		m.activeChannelID = channelID
-		return m, func() tea.Msg { return MsgChannelSelected{ChannelID: channelID} }
+		var markCmd tea.Cmd
+		if m.client != nil && prevID != "" && prevID != channelID {
+			markCmd = markReadCmd(m.client, prevID)
+		}
+		return m, tea.Batch(markCmd, func() tea.Msg { return MsgChannelSelected{ChannelID: channelID} })
 	}
 
 	return m, nil
