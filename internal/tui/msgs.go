@@ -98,6 +98,15 @@ type MsgChannelRead struct {
 	ChannelID string
 }
 
+// MsgSearchResults carries the result of a channel + user REST search.
+// Gen must match the model's searchGen to discard stale responses from earlier queries.
+type MsgSearchResults struct {
+	Gen      int
+	Channels []mattermost.Channel
+	Users    []mattermost.User
+	Err      error
+}
+
 // MsgThreadLoaded carries the result of a thread REST load.
 type MsgThreadLoaded struct {
 	RootID         string

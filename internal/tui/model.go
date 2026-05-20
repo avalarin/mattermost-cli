@@ -41,8 +41,8 @@ const (
 	ModeChannels
 	// ModeThread is the thread popup mode: thread overlay is active.
 	ModeThread
-	// ModeChannelFilter is the channel sort/filter popup mode.
-	ModeChannelFilter
+	// ModeSearch is the unified channel/user search + sort/filter popup mode.
+	ModeSearch
 )
 
 const (
@@ -104,8 +104,9 @@ type Model struct {
 	replyRootID         string       // set by /reply; consumed by next /send
 	threadPopupWidthPct int          // percent of terminal width for the thread popup (default 70)
 
-	channelFilterPopup *ChannelFilterPopup // non-nil when the sort/filter popup is open
-	channelSortFilter  ChannelFilterState  // currently applied sort/filter state
+	searchPopup       *SearchPopup       // non-nil when the search popup is open
+	searchGen         int                // incremented on each search to discard stale MsgSearchResults
+	channelSortFilter ChannelFilterState // currently applied sort/filter state
 
 	unreadCounts map[string]int // channelID → unread message count
 
@@ -795,6 +796,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case MsgSearchResults:
+		if msg.Gen != m.searchGen {
+			return m, nil // stale result from a previous query
+		}
+		if m.searchPopup != nil {
+			if msg.Err != nil {
+				m.statusGen++
+				m.statusMsg = "Search failed: " + msg.Err.Error()
+				m.statusIsError = true
+				gen := m.statusGen
+				return m, clearStatusAfter(4*time.Second, gen)
+			}
+			p := m.searchPopup.SetSearchResults(msg.Channels, msg.Users)
+			m.searchPopup = &p
+		}
+		return m, nil
+
 	case MsgEscTimeout:
 		if msg.Gen == m.escGen && m.escPending {
 			m.escPending = false
@@ -1158,18 +1176,24 @@ func (m Model) syncInputHeight() Model {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// In ModeHelp, Ctrl+C closes the popup instead of triggering the exit mechanic.
+	// Mode-specific Ctrl+C interceptions before the global exit handler.
 	if m.mode == ModeHelp && key.Matches(msg, m.keys.CtrlC) {
 		return m.closeHelp()
+	}
+	if m.mode == ModeSearch && key.Matches(msg, m.keys.CtrlC) {
+		return m.closeSearchPopup(false)
 	}
 	// Ctrl+C is handled globally before mode dispatch — guaranteed exit path.
 	if key.Matches(msg, m.keys.CtrlC) {
 		return m.handleCtrlC()
 	}
 
-	// Ctrl+K opens the channel sort/filter popup from any mode.
-	if key.Matches(msg, m.keys.ChannelFilter) {
-		return m.openChannelFilter()
+	// Ctrl+K opens (or closes) the unified search popup from any mode.
+	if key.Matches(msg, m.keys.Search) {
+		if m.mode == ModeSearch {
+			return m.closeSearchPopup(false)
+		}
+		return m.openSearchPopup()
 	}
 
 	// Prefix mode: Ctrl+B was pressed, waiting for an arrow key.
@@ -1227,8 +1251,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyChannels(msg)
 	case ModeThread:
 		return m.handleKeyThread(msg)
-	case ModeChannelFilter:
-		return m.handleKeyChannelFilter(msg)
+	case ModeSearch:
+		return m.handleKeySearch(msg)
 	}
 	return m, nil
 }
@@ -1669,8 +1693,8 @@ func (m Model) View() string {
 	}
 
 	var body string
-	if m.channelFilterPopup != nil {
-		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.channelFilterPopup.View())
+	if m.searchPopup != nil {
+		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.searchPopup.View())
 	} else if m.threadPopup != nil {
 		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.threadPopup.View())
 	} else {
@@ -1792,7 +1816,7 @@ func (m Model) renderStatusBar() string {
 		ModeChannels:      "[CHANNELS]",
 		ModeHelp:          "[HELP]",
 		ModeThread:        "[THREAD]",
-		ModeChannelFilter: "[FILTER]",
+		ModeSearch: "[SEARCH]",
 	}
 	badge, hasBadge := modeLabels[m.mode]
 	if !m.showModeIndicator {
@@ -2022,47 +2046,141 @@ func (m Model) renderHelp() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
 }
 
-func (m Model) openChannelFilter() (tea.Model, tea.Cmd) {
+func (m Model) openSearchPopup() (tea.Model, tea.Cmd) {
 	outerW := m.width - 4
-	if outerW > 44 {
-		outerW = 44
+	if outerW > 62 {
+		outerW = 62
 	}
-	popup := NewChannelFilterPopup(m.channelSortFilter)
-	popup = popup.SetSize(outerW, 12)
-	m.channelFilterPopup = &popup
+	if outerW < 20 {
+		outerW = 20
+	}
+	outerH := m.height - 6
+	if outerH > 22 {
+		outerH = 22
+	}
+	channels := m.channelsView.ChannelList()
+	popup := NewSearchPopup(m.channelSortFilter, channels, m.unreadCounts)
+	popup = popup.SetSize(outerW, outerH)
+	m.searchPopup = &popup
 	m.prevMode = m.mode
-	m.mode = ModeChannelFilter
+	m.mode = ModeSearch
 	return m, nil
 }
 
-func (m Model) closeChannelFilter(apply bool) (tea.Model, tea.Cmd) {
-	if apply && m.channelFilterPopup != nil {
-		m.channelSortFilter = m.channelFilterPopup.Pending()
+func (m Model) closeSearchPopup(apply bool) (tea.Model, tea.Cmd) {
+	if m.searchPopup != nil {
+		if apply {
+			m.channelSortFilter = m.searchPopup.Filter()
+		} else {
+			m.channelSortFilter = m.searchPopup.Original()
+		}
 		m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, m.unreadCounts)
 	}
-	m.channelFilterPopup = nil
+	m.searchPopup = nil
 	m.mode = m.prevMode
 	return m, nil
 }
 
-func (m Model) handleKeyChannelFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.channelFilterPopup == nil {
+func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.searchPopup == nil {
 		return m, nil
 	}
-	p := *m.channelFilterPopup
+	p := *m.searchPopup
+
 	switch {
+	case key.Matches(msg, m.keys.Cancel): // Esc — close, restore original filter
+		return m.closeSearchPopup(false)
+
 	case key.Matches(msg, m.keys.Up):
 		p = p.MoveUp()
+		m.searchPopup = &p
+		return m, nil
+
 	case key.Matches(msg, m.keys.Down):
 		p = p.MoveDown()
+		m.searchPopup = &p
+		return m, nil
+
+	case msg.String() == "tab":
+		p = p.ToggleFocus()
+		m.searchPopup = &p
+		return m, nil
+
 	case msg.String() == " ":
-		p = p.Toggle()
-	case key.Matches(msg, m.keys.Send):
-		m.channelFilterPopup = &p
-		return m.closeChannelFilter(true)
-	case key.Matches(msg, m.keys.Cancel):
-		return m.closeChannelFilter(false)
+		p = p.ToggleFilter()
+		m.searchPopup = &p
+		return m, nil
+
+	case key.Matches(msg, m.keys.Send): // Enter — open selected item
+		item, ok := p.SelectedItem()
+		if !ok {
+			return m, nil
+		}
+		switch item.kind {
+		case searchResultAllActivity:
+			m2, cmd2 := m.closeSearchPopup(true)
+			return m2, tea.Batch(cmd2, func() tea.Msg { return MsgChannelSelected{ChannelID: ""} })
+		case searchResultChannel:
+			chID := item.channel.ID
+			m2, cmd2 := m.closeSearchPopup(true)
+			return m2, tea.Batch(cmd2, func() tea.Msg { return MsgChannelSelected{ChannelID: chID} })
+		case searchResultUser:
+			userID := item.user.ID
+			m2, cmd2 := m.closeSearchPopup(true)
+			return m2, tea.Batch(cmd2, findOrCreateDMCmd(m.client, m.teamID, userID))
+		}
+		return m, nil
+
+	case msg.Type == tea.KeyBackspace:
+		p = p.Backspace()
+		m.searchPopup = &p
+		return m, nil
+
+	default:
+		if len(msg.Runes) > 0 {
+			for _, r := range msg.Runes {
+				p = p.TypeChar(r)
+			}
+			if p.IsSearchMode() {
+				p = p.SetSearching()
+				m.searchGen++
+				m.searchPopup = &p
+				return m, searchCmd(m.client, m.teamID, p.Query(), m.searchGen)
+			}
+			m.searchPopup = &p
+		}
 	}
-	m.channelFilterPopup = &p
 	return m, nil
+}
+
+// searchCmd fires a REST search for channels and users and returns MsgSearchResults.
+func searchCmd(client *mattermost.Client, teamID, query string, gen int) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return MsgSearchResults{Gen: gen, Err: errors.New("not connected")}
+		}
+		channels, chErr := client.SearchChannels(teamID, query)
+		users, usrErr := client.SearchUsers(query)
+		if chErr != nil {
+			return MsgSearchResults{Gen: gen, Err: chErr}
+		}
+		if usrErr != nil {
+			return MsgSearchResults{Gen: gen, Err: usrErr}
+		}
+		return MsgSearchResults{Gen: gen, Channels: channels, Users: users}
+	}
+}
+
+// findOrCreateDMCmd creates or finds a DM channel with the given user and returns MsgChannelSelected.
+func findOrCreateDMCmd(client *mattermost.Client, teamID, userID string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return MsgCommandResult{Err: errors.New("not connected")}
+		}
+		ch, err := client.FindOrCreateDM(teamID, userID)
+		if err != nil {
+			return MsgCommandResult{Err: fmt.Errorf("open DM: %w", err)}
+		}
+		return MsgChannelSelected{ChannelID: ch.ID}
+	}
 }

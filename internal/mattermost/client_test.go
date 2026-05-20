@@ -301,3 +301,57 @@ func TestMarkChannelRead_CallsAPI(t *testing.T) {
 		t.Errorf("method = %q, want POST", capturedMethod)
 	}
 }
+
+func TestSearchChannels_OK(t *testing.T) {
+	var capturedQuery string
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/teams/team1/channels/search" {
+			http.NotFound(w, r)
+			return
+		}
+		capturedQuery = r.URL.RawQuery
+		writeJSON(w, []map[string]interface{}{
+			{"id": "c1", "name": "general", "display_name": "General", "type": "O"},
+		})
+	}))
+
+	channels, err := client.SearchChannels("team1", "general")
+	if err != nil {
+		t.Fatalf("SearchChannels() error: %v", err)
+	}
+	if len(channels) != 1 {
+		t.Fatalf("expected 1 channel, got %d", len(channels))
+	}
+	if channels[0].ID != "c1" {
+		t.Errorf("channel.ID = %q, want %q", channels[0].ID, "c1")
+	}
+	if !strings.Contains(capturedQuery, "term=general") {
+		t.Errorf("expected term=general in query, got %q", capturedQuery)
+	}
+}
+
+func TestSearchUsers_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v4/users/search" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, []map[string]string{
+			{"id": "u1", "username": "alice"},
+		})
+	}))
+
+	users, err := client.SearchUsers("ali")
+	if err != nil {
+		t.Fatalf("SearchUsers() error: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(users))
+	}
+	if users[0].ID != "u1" {
+		t.Errorf("user.ID = %q, want %q", users[0].ID, "u1")
+	}
+	if users[0].Username != "alice" {
+		t.Errorf("user.Username = %q, want %q", users[0].Username, "alice")
+	}
+}

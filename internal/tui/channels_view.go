@@ -12,6 +12,20 @@ import (
 
 const allActivityID = "" // sentinel for All Activity filter
 
+// ChannelSortOrder is the sort key for the channel list.
+type ChannelSortOrder int
+
+const (
+	ChannelSortAlphabetical ChannelSortOrder = iota
+	ChannelSortLastMessage
+)
+
+// ChannelFilterState holds the sort+filter configuration for the channel list.
+type ChannelFilterState struct {
+	SortOrder  ChannelSortOrder
+	UnreadOnly bool
+}
+
 type channelItem struct {
 	channel mattermost.Channel
 	isAll   bool // true for the All Activity entry
@@ -64,6 +78,18 @@ func (cv ChannelsView) SetSize(w, h int) ChannelsView {
 	cv.width = w
 	cv.height = h
 	return cv
+}
+
+// ChannelList returns the slice of channels (excluding the All Activity sentinel),
+// with resolved DM display names already applied.
+func (cv ChannelsView) ChannelList() []mattermost.Channel {
+	channels := make([]mattermost.Channel, 0, len(cv.items))
+	for _, item := range cv.items {
+		if !item.isAll {
+			channels = append(channels, item.channel)
+		}
+	}
+	return channels
 }
 
 // contentHeight returns the number of content rows (total height minus header row).
