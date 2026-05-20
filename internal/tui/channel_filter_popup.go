@@ -142,6 +142,9 @@ func (p SearchPopup) SetSearching() SearchPopup {
 	return p
 }
 
+// Searching reports whether a REST search is currently in-flight.
+func (p SearchPopup) Searching() bool { return p.searching }
+
 // MoveUp moves the cursor up in the focused section.
 // In filter focus the layout has two rows: Sort (cursors 0,1) and Filter (cursor 2).
 // ↑ from cursor 2 jumps back to the Sort row (cursor 0).
@@ -291,15 +294,15 @@ func (p SearchPopup) View(spinnerFrame string) string {
 			Render(strings.Repeat("─", innerW))
 	}
 
-	// Search input line — spinner shown on the right while a REST search is in flight.
-	queryDisplay := "> " + p.query + "█"
+	// Search input line — spinner replaces the ">" prompt while a REST search is in flight.
+	prompt := "> "
 	if p.searching && spinnerFrame != "" {
-		queryDisplay += " " + spinnerFrame
+		prompt = spinnerFrame + " "
 	}
 	queryLine := lipgloss.NewStyle().
 		Width(innerW).
 		Foreground(lipgloss.Color("15")).
-		Render(queryDisplay)
+		Render(prompt + p.query + "█")
 
 	// Results list: compute max visible rows from available height.
 	// Fixed overhead per mode (including 2 for border):
