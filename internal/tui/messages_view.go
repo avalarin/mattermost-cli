@@ -119,7 +119,7 @@ func (mv MessagesView) SetSize(w, h int) MessagesView {
 // rerenders, and auto-scrolls if atBottom.
 func (mv MessagesView) AddFeedItem(item feedItem) MessagesView {
 	i := sort.Search(len(mv.feedItems), func(j int) bool {
-		return mv.feedItems[j].createAt > item.createAt
+		return mv.feedItems[j].createAt >= item.createAt
 	})
 	mv.feedItems = slices.Insert(mv.feedItems, i, item)
 	mv = mv.rerenderFeed()

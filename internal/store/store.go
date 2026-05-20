@@ -49,6 +49,11 @@ func (s *Store) AddMessage(msg Message) string {
 	snippet := s.getParentSnippetLocked(msg.RootID)
 	line := renderMessage(msg, snippet)
 
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		if s.messages[i].ID == msg.ID {
+			return line
+		}
+	}
 	if len(s.messages) >= messageCap {
 		s.messages = s.messages[1:]
 	}
