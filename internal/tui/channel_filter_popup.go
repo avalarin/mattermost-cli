@@ -277,7 +277,9 @@ func (p SearchPopup) buildLocalResults() []searchResultItem {
 }
 
 // View renders the search popup as a bordered box.
-func (p SearchPopup) View() string {
+// spinnerFrame is the current spinner character (e.g. from spinner.Model.View());
+// it is shown next to the query while a REST search is in flight.
+func (p SearchPopup) View(spinnerFrame string) string {
 	innerW := p.outerW - 2
 	if innerW < 20 {
 		innerW = 20
@@ -289,8 +291,11 @@ func (p SearchPopup) View() string {
 			Render(strings.Repeat("─", innerW))
 	}
 
-	// Search input line.
+	// Search input line — spinner shown on the right while a REST search is in flight.
 	queryDisplay := "> " + p.query + "█"
+	if p.searching && spinnerFrame != "" {
+		queryDisplay += " " + spinnerFrame
+	}
 	queryLine := lipgloss.NewStyle().
 		Width(innerW).
 		Foreground(lipgloss.Color("15")).

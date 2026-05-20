@@ -1700,7 +1700,7 @@ func (m Model) View() string {
 
 	var body string
 	if m.searchPopup != nil {
-		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.searchPopup.View())
+		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.searchPopup.View(m.spinner.View()))
 	} else if m.threadPopup != nil {
 		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.threadPopup.View())
 	} else {
