@@ -812,6 +812,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case MsgSearchDebounce:
+		if msg.Gen != m.searchGen || m.searchPopup == nil {
+			return m, nil // stale debounce tick (user kept typing or closed popup)
+		}
+		return m, searchCmd(m.client, m.teamID, msg.Query, msg.Gen)
+
 	case MsgSearchResults:
 		if msg.Gen != m.searchGen {
 			return m, nil // stale result from a previous query
@@ -2175,14 +2181,21 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if p.IsSearchMode() {
 				p = p.SetSearching()
 				m.searchGen++
+				gen := m.searchGen
+				query := p.Query()
 				m.searchPopup = &p
-				return m, searchCmd(m.client, m.teamID, p.Query(), m.searchGen)
+				return m, tea.Tick(searchDebounceDelay, func(_ time.Time) tea.Msg {
+					return MsgSearchDebounce{Gen: gen, Query: query}
+				})
 			}
 			m.searchPopup = &p
 		}
 	}
 	return m, nil
 }
+
+// searchDebounceDelay is the wait after the last keystroke before firing the REST search.
+const searchDebounceDelay = 300 * time.Millisecond
 
 // searchCmd fires a REST search for channels and users and returns MsgSearchResults.
 func searchCmd(client *mattermost.Client, teamID, query string, gen int) tea.Cmd {

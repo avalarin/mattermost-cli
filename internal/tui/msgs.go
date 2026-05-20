@@ -107,6 +107,13 @@ type MsgSearchResults struct {
 	Err      error
 }
 
+// MsgSearchDebounce is sent after the debounce delay to fire the actual REST search.
+// Gen must match the model's searchGen; stale debounce ticks are discarded.
+type MsgSearchDebounce struct {
+	Gen   int
+	Query string
+}
+
 // MsgThreadLoaded carries the result of a thread REST load.
 type MsgThreadLoaded struct {
 	RootID         string
