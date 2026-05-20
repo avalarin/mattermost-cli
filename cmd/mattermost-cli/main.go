@@ -215,11 +215,18 @@ func runHeadless(configPath string, st *store.Store) {
 		}
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
 	// If there's a channel with unreads, mark it as read after 3s and verify.
 	if firstUnreadID != "" {
 		hlLog("MARK", "will mark %q (%s) as read in 3s...", firstUnreadName, firstUnreadID)
 		go func() {
-			time.Sleep(3 * time.Second)
+			select {
+			case <-time.After(3 * time.Second):
+			case <-ctx.Done():
+				return
+			}
 			merr := client.MarkChannelRead(firstUnreadID)
 			if merr != nil {
 				hlLog("MARK", "MarkChannelRead error: %v", merr)
@@ -234,9 +241,6 @@ func runHeadless(configPath string, st *store.Store) {
 			hlLog("MARK", "after mark: unread=%d mention=%d", u.MsgCount, u.MentionCount)
 		}()
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
 	wsClient.Start(ctx)
