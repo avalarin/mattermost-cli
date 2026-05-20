@@ -2076,6 +2076,9 @@ func (m Model) openSearchPopup() (tea.Model, tea.Cmd) {
 		outerW = 20
 	}
 	outerH := m.height - 6
+	if outerH < 6 {
+		outerH = 6
+	}
 	if outerH > 22 {
 		outerH = 22
 	}
@@ -2190,21 +2193,39 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // searchDebounceDelay is the wait after the last keystroke before firing the REST search.
 const searchDebounceDelay = 300 * time.Millisecond
 
-// searchCmd fires a REST search for channels and users and returns MsgSearchResults.
+// searchCmd fires concurrent REST searches for channels and users and returns MsgSearchResults.
 func searchCmd(client *mattermost.Client, teamID, query string, gen int) tea.Cmd {
 	return func() tea.Msg {
 		if client == nil {
 			return MsgSearchResults{Gen: gen, Err: errors.New("not connected")}
 		}
-		channels, chErr := client.SearchChannels(teamID, query)
-		users, usrErr := client.SearchUsers(query)
-		if chErr != nil {
-			return MsgSearchResults{Gen: gen, Err: chErr}
+		type chResult struct {
+			channels []mattermost.Channel
+			err      error
 		}
-		if usrErr != nil {
-			return MsgSearchResults{Gen: gen, Err: usrErr}
+		type usrResult struct {
+			users []mattermost.User
+			err   error
 		}
-		return MsgSearchResults{Gen: gen, Channels: channels, Users: users}
+		chCh := make(chan chResult, 1)
+		usrCh := make(chan usrResult, 1)
+		go func() {
+			ch, err := client.SearchChannels(teamID, query)
+			chCh <- chResult{ch, err}
+		}()
+		go func() {
+			u, err := client.SearchUsers(query)
+			usrCh <- usrResult{u, err}
+		}()
+		cr := <-chCh
+		ur := <-usrCh
+		if cr.err != nil {
+			return MsgSearchResults{Gen: gen, Err: cr.err}
+		}
+		if ur.err != nil {
+			return MsgSearchResults{Gen: gen, Err: ur.err}
+		}
+		return MsgSearchResults{Gen: gen, Channels: cr.channels, Users: ur.users}
 	}
 }
 
