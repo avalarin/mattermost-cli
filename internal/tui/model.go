@@ -816,28 +816,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Gen != m.searchGen || m.searchPopup == nil {
 			return m, nil // stale debounce tick (user kept typing or closed popup)
 		}
-		// Start the spinner tick chain if it isn't already running (historyLoading keeps it alive otherwise).
+		// Start the spinner tick chain only if not already running (retry keeps it alive).
 		var spinnerCmd tea.Cmd
-		if !m.historyLoading {
+		if !m.historyLoading && !m.searchPopup.Searching() {
 			spinnerCmd = m.spinner.Tick
 		}
+		p := m.searchPopup.SetSearching()
+		m.searchPopup = &p
 		return m, tea.Batch(searchCmd(m.client, m.teamID, msg.Query, msg.Gen), spinnerCmd)
 
 	case MsgSearchResults:
-		if msg.Gen != m.searchGen {
+		if msg.Gen != m.searchGen || m.searchPopup == nil {
 			return m, nil // stale result from a previous query
 		}
-		if m.searchPopup != nil {
-			if msg.Err != nil {
-				m.statusGen++
-				m.statusMsg = "Search failed: " + msg.Err.Error()
-				m.statusIsError = true
-				gen := m.statusGen
-				return m, clearStatusAfter(4*time.Second, gen)
+		if msg.Err != nil {
+			if errors.Is(msg.Err, mattermost.ErrRateLimit) {
+				// Silent retry after 1 s — spinner stays on, user doesn't need to know.
+				gen := msg.Gen
+				query := m.searchPopup.Query()
+				return m, tea.Tick(time.Second, func(_ time.Time) tea.Msg {
+					return MsgSearchDebounce{Gen: gen, Query: query}
+				})
 			}
-			p := m.searchPopup.SetSearchResults(msg.Channels, msg.Users)
+			// Non-retryable error: stop spinner, show message inside the popup.
+			p := m.searchPopup.SetError("Search failed: " + msg.Err.Error())
 			m.searchPopup = &p
+			return m, nil
 		}
+		p := m.searchPopup.SetSearchResults(msg.Channels, msg.Users)
+		m.searchPopup = &p
 		return m, nil
 
 	case MsgEscTimeout:
@@ -2187,7 +2194,6 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				p = p.TypeChar(r)
 			}
 			if p.IsSearchMode() {
-				p = p.SetSearching()
 				m.searchGen++
 				gen := m.searchGen
 				query := p.Query()
