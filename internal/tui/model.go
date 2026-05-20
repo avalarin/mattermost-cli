@@ -816,7 +816,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Gen != m.searchGen || m.searchPopup == nil {
 			return m, nil // stale debounce tick (user kept typing or closed popup)
 		}
-		return m, searchCmd(m.client, m.teamID, msg.Query, msg.Gen)
+		// Start the spinner tick chain if it isn't already running (historyLoading keeps it alive otherwise).
+		var spinnerCmd tea.Cmd
+		if !m.historyLoading {
+			spinnerCmd = m.spinner.Tick
+		}
+		return m, tea.Batch(searchCmd(m.client, m.teamID, msg.Query, msg.Gen), spinnerCmd)
 
 	case MsgSearchResults:
 		if msg.Gen != m.searchGen {
@@ -862,12 +867,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		if !m.historyLoading {
+		searchSpinning := m.searchPopup != nil && m.searchPopup.Searching()
+		if !m.historyLoading && !searchSpinning {
 			return m, nil
 		}
-		m.messagesView = m.messagesView.SetFeedItems([]feedItem{
-			{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
-		})
+		if m.historyLoading {
+			m.messagesView = m.messagesView.SetFeedItems([]feedItem{
+				{kind: feedItemKindSystem, system: m.spinner.View() + " Loading…"},
+			})
+		}
 		return m, cmd
 
 	case MsgOpenHelp:
