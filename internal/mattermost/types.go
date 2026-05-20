@@ -19,12 +19,21 @@ type Team struct {
 
 // Channel represents a Mattermost channel.
 type Channel struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	Type        string `json:"type"`        // "O"=public, "P"=private, "D"=DM, "G"=group DM
-	DeleteAt    int64  `json:"delete_at"`   // non-zero = archived
-	LastPostAt  int64  `json:"last_post_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	DisplayName   string `json:"display_name"`
+	Type          string `json:"type"`            // "O"=public, "P"=private, "D"=DM, "G"=group DM
+	DeleteAt      int64  `json:"delete_at"`       // non-zero = archived
+	LastPostAt    int64  `json:"last_post_at"`
+	TotalMsgCount int64  `json:"total_msg_count"` // total messages in channel
+}
+
+// ChannelMember holds a user's read position and mention count for one channel.
+type ChannelMember struct {
+	ChannelID    string `json:"channel_id"`
+	UserID       string `json:"user_id"`
+	MsgCount     int64  `json:"msg_count"`     // messages seen by the user (not unread!)
+	MentionCount int    `json:"mention_count"` // pending @mentions for the user
 }
 
 // User represents a Mattermost user.

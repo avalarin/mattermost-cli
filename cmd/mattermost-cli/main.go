@@ -165,8 +165,82 @@ func runHeadless(configPath string, st *store.Store) {
 	}
 	hlLog("AUTH", "connected as @%s", user.Username)
 
+	// Load channels and print unread counts using batch API (2 requests total).
+	var firstUnreadID string
+	var firstUnreadName string
+	if cfg.Server.Team != "" {
+		team, terr := client.GetTeamByName(cfg.Server.Team)
+		if terr != nil {
+			hlLog("UNREADS", "failed to get team: %v", terr)
+		} else {
+			channels, cerr := client.GetChannelsForTeam(team.ID)
+			if cerr != nil {
+				hlLog("UNREADS", "failed to get channels: %v", cerr)
+			} else {
+				members, merr := client.GetMyChannelMembersForTeam(team.ID)
+				if merr != nil {
+					hlLog("UNREADS", "GetMyChannelMembersForTeam error: %v", merr)
+				} else {
+					hlLog("UNREADS", "%d channels, %d memberships fetched (2 requests)", len(channels), len(members))
+					for _, ch := range channels {
+						m, ok := members[ch.ID]
+						if !ok {
+							continue
+						}
+						unread := int(ch.TotalMsgCount - m.MsgCount)
+						if unread < 0 {
+							unread = 0
+						}
+						if m.MentionCount > unread {
+							unread = m.MentionCount
+						}
+						if unread > 0 {
+							name := ch.DisplayName
+							if name == "" {
+								name = ch.Name
+							}
+							hlLog("UNREADS", "  %-30s unread=%d mention=%d total=%d seen=%d",
+								name, unread, m.MentionCount, ch.TotalMsgCount, m.MsgCount)
+							if firstUnreadID == "" {
+								firstUnreadID = ch.ID
+								firstUnreadName = name
+							}
+						}
+					}
+					if firstUnreadID == "" {
+						hlLog("UNREADS", "  (no channels with unread messages)")
+					}
+				}
+			}
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+
+	// If there's a channel with unreads, mark it as read after 3s and verify.
+	if firstUnreadID != "" {
+		hlLog("MARK", "will mark %q (%s) as read in 3s...", firstUnreadName, firstUnreadID)
+		go func() {
+			select {
+			case <-time.After(3 * time.Second):
+			case <-ctx.Done():
+				return
+			}
+			merr := client.MarkChannelRead(firstUnreadID)
+			if merr != nil {
+				hlLog("MARK", "MarkChannelRead error: %v", merr)
+				return
+			}
+			hlLog("MARK", "MarkChannelRead OK — re-fetching membership...")
+			u, uerr := client.GetChannelUnreads(firstUnreadID)
+			if uerr != nil {
+				hlLog("MARK", "GetChannelUnreads after mark: error: %v", uerr)
+				return
+			}
+			hlLog("MARK", "after mark: unread=%d mention=%d", u.MsgCount, u.MentionCount)
+		}()
+	}
 
 	wsClient := mattermost.NewWSClient(cfg.Server.URL, cfg.Server.Token)
 	wsClient.Start(ctx)
@@ -204,7 +278,12 @@ func runHeadless(configPath string, st *store.Store) {
 				hlLog("EVENT", "posted #%s %s: %q", channel, sender, hlShort(post.Text))
 				continue
 			}
-			hlLog("EVENT", "%s", evt.Type)
+			// Log all non-empty events with their data keys for diagnostics.
+			keys := make([]string, 0, len(evt.Data))
+			for k := range evt.Data {
+				keys = append(keys, k)
+			}
+			hlLog("EVENT", "%s data=%v", evt.Type, keys)
 		}
 	}
 }

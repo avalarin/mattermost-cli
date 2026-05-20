@@ -242,13 +242,19 @@ func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
 
 // WithSortAndFilter returns a new ChannelsView with sort order and unread filter applied.
 // All Activity is always pinned at index 0. nil unreadCounts means no filtering.
+// Both selectedIdx and openIdx are preserved by channel ID after reordering; if the
+// previously selected channel was filtered out, selectedIdx falls back to 0.
 func (cv ChannelsView) WithSortAndFilter(state ChannelFilterState, unreadCounts map[string]int) ChannelsView {
-	// Capture open channel ID so we can restore openIdx after reorder.
-	var openChannelID string
+	// Capture channel IDs to restore cursor positions after reorder/filter.
+	var openChannelID, selectedChannelID string
 	if cv.openIdx >= 0 && cv.openIdx < len(cv.items) {
-		open := cv.items[cv.openIdx]
-		if !open.isAll {
-			openChannelID = open.channel.ID
+		if item := cv.items[cv.openIdx]; !item.isAll {
+			openChannelID = item.channel.ID
+		}
+	}
+	if cv.selectedIdx >= 0 && cv.selectedIdx < len(cv.items) {
+		if item := cv.items[cv.selectedIdx]; !item.isAll {
+			selectedChannelID = item.channel.ID
 		}
 	}
 
@@ -295,9 +301,8 @@ func (cv ChannelsView) WithSortAndFilter(state ChannelFilterState, unreadCounts 
 	items = append(items, allItem)
 	items = append(items, rest...)
 	cv.items = items
-	cv.selectedIdx = 0
-	cv.scrollOff = 0
 
+	// Restore openIdx by channel ID; fall back to 0 (All Activity) if not found.
 	cv.openIdx = 0
 	if openChannelID != "" {
 		for i, item := range cv.items {
@@ -307,6 +312,19 @@ func (cv ChannelsView) WithSortAndFilter(state ChannelFilterState, unreadCounts 
 			}
 		}
 	}
+
+	// Restore selectedIdx by channel ID; fall back to 0 if filtered out.
+	cv.selectedIdx = 0
+	cv.scrollOff = 0
+	if selectedChannelID != "" {
+		for i, item := range cv.items {
+			if !item.isAll && item.channel.ID == selectedChannelID {
+				cv.selectedIdx = i
+				break
+			}
+		}
+	}
+	cv = cv.clampScroll()
 	return cv
 }
 
