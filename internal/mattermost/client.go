@@ -200,6 +200,27 @@ func (c *Client) GetUserByUsername(username string) (*User, error) {
 	return &u, nil
 }
 
+// SearchChannels searches for channels in a team matching the query string.
+func (c *Client) SearchChannels(teamID, query string) ([]Channel, error) {
+	var channels []Channel
+	if err := c.getQ(fmt.Sprintf("/teams/%s/channels/search", teamID), "term="+url.QueryEscape(query), &channels); err != nil {
+		return nil, err
+	}
+	return channels, nil
+}
+
+// SearchUsers searches for users matching the query string.
+func (c *Client) SearchUsers(query string) ([]User, error) {
+	var users []User
+	body := struct {
+		Term string `json:"term"`
+	}{Term: query}
+	if err := c.post("/users/search", body, &users); err != nil {
+		return nil, err
+	}
+	return users, nil
+}
+
 // GetChannelPosts retrieves posts for a channel, returning them in chronological order (oldest first).
 // page and perPage control pagination; page=0 returns the most recent perPage posts.
 // The Mattermost v4 PostList response contains an "order" array (newest-first) and a "posts" map.
