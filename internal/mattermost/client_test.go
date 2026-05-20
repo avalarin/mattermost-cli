@@ -3,6 +3,7 @@ package mattermost_test
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -303,13 +304,14 @@ func TestMarkChannelRead_CallsAPI(t *testing.T) {
 }
 
 func TestSearchChannels_OK(t *testing.T) {
-	var capturedQuery string
+	var capturedBody string
 	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/teams/team1/channels/search" {
+		if r.URL.Path != "/api/v4/teams/team1/channels/search" || r.Method != http.MethodPost {
 			http.NotFound(w, r)
 			return
 		}
-		capturedQuery = r.URL.RawQuery
+		b, _ := io.ReadAll(r.Body)
+		capturedBody = string(b)
 		writeJSON(w, []map[string]interface{}{
 			{"id": "c1", "name": "general", "display_name": "General", "type": "O"},
 		})
@@ -325,8 +327,8 @@ func TestSearchChannels_OK(t *testing.T) {
 	if channels[0].ID != "c1" {
 		t.Errorf("channel.ID = %q, want %q", channels[0].ID, "c1")
 	}
-	if !strings.Contains(capturedQuery, "term=general") {
-		t.Errorf("expected term=general in query, got %q", capturedQuery)
+	if !strings.Contains(capturedBody, `"term"`) || !strings.Contains(capturedBody, "general") {
+		t.Errorf("expected JSON body with term=general, got %q", capturedBody)
 	}
 }
 

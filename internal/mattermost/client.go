@@ -203,7 +203,10 @@ func (c *Client) GetUserByUsername(username string) (*User, error) {
 // SearchChannels searches for channels in a team matching the query string.
 func (c *Client) SearchChannels(teamID, query string) ([]Channel, error) {
 	var channels []Channel
-	if err := c.getQ(fmt.Sprintf("/teams/%s/channels/search", teamID), "term="+url.QueryEscape(query), &channels); err != nil {
+	body := struct {
+		Term string `json:"term"`
+	}{Term: query}
+	if err := c.post(fmt.Sprintf("/teams/%s/channels/search", teamID), body, &channels); err != nil {
 		return nil, err
 	}
 	return channels, nil
