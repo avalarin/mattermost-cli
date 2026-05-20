@@ -865,6 +865,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MsgChannelMembersLoaded:
 		if m.infoPopup != nil && msg.ChannelID == m.infoPopup.ChannelID() {
+			if msg.Err != nil {
+				m.statusMsg = "Failed to load members: " + msg.Err.Error()
+				m.statusIsError = true
+				m.statusGen++
+				p := m.infoPopup.SetMembersError()
+				m.infoPopup = &p
+				return m, clearStatusAfter(3*time.Second, m.statusGen)
+			}
 			p := m.infoPopup.SetMembers(msg.Members)
 			m.infoPopup = &p
 		}
@@ -1198,6 +1206,12 @@ func (m Model) handleWindowSize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 		m.threadPopup = &tp
 	}
 
+	if m.infoPopup != nil {
+		outerW, outerH := m.infoPopupDimensions()
+		ip := m.infoPopup.SetSize(outerW, outerH)
+		m.infoPopup = &ip
+	}
+
 	if m.helpReady {
 		_, _, innerW, innerH := m.helpDimensions()
 		m.helpViewport.Width = innerW
@@ -1230,6 +1244,11 @@ func (m Model) syncInputHeight() Model {
 			outerW, outerH := m.threadPopupDimensions()
 			tp := m.threadPopup.SetSize(outerW, outerH)
 			m.threadPopup = &tp
+		}
+		if m.infoPopup != nil {
+			outerW, outerH := m.infoPopupDimensions()
+			ip := m.infoPopup.SetSize(outerW, outerH)
+			m.infoPopup = &ip
 		}
 	}
 	return m
@@ -1983,6 +2002,22 @@ func (m Model) threadPopupDimensions() (outerW, outerH int) {
 	return
 }
 
+// infoPopupDimensions returns the outer (W, H) for the channel info popup.
+func (m Model) infoPopupDimensions() (outerW, outerH int) {
+	outerW = m.width - 4
+	if outerW > 64 {
+		outerW = 64
+	}
+	if outerW < 24 {
+		outerW = 24
+	}
+	outerH = m.feedH - 4
+	if outerH < 8 {
+		outerH = 8
+	}
+	return
+}
+
 // helpDimensions computes the outer and inner dimensions of the help popup.
 func (m Model) helpDimensions() (outerW, outerH, innerW, innerH int) {
 	outerW = m.width - 4
@@ -2155,17 +2190,7 @@ func (m Model) closeSearchPopup(apply bool) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) openInfoPopup(ch mattermost.Channel) (tea.Model, tea.Cmd) {
-	outerW := m.width - 4
-	if outerW > 64 {
-		outerW = 64
-	}
-	if outerW < 24 {
-		outerW = 24
-	}
-	outerH := m.feedH - 4
-	if outerH < 8 {
-		outerH = 8
-	}
+	outerW, outerH := m.infoPopupDimensions()
 	popup := NewChannelInfoPopup(ch)
 	popup = popup.SetSize(outerW, outerH)
 	m.infoPopup = &popup

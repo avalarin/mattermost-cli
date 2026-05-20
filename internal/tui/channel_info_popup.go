@@ -54,6 +54,15 @@ func (p ChannelInfoPopup) SetMembers(members []mattermost.User) ChannelInfoPopup
 	return p
 }
 
+// SetMembersError clears the loading state with an empty list (error shown in status bar).
+func (p ChannelInfoPopup) SetMembersError() ChannelInfoPopup {
+	p.members = nil
+	p.loading = false
+	p.selectedIdx = -1
+	p.scrollOff = 0
+	return p
+}
+
 // ChannelID returns the ID of the channel shown in this popup.
 func (p ChannelInfoPopup) ChannelID() string { return p.channel.ID }
 
@@ -96,6 +105,18 @@ func (p ChannelInfoPopup) View() string {
 	innerW := p.outerW - 2
 	if innerW < 20 {
 		innerW = 20
+	}
+	// Fixed chrome: border(2) + title(1) + sep(1) + desc(1) + sep(1) + membersHeader(1) + sep(1) + footer(1) = 9
+	const fixedChrome = 9
+	visibleLines := maxMemberLines
+	if p.outerH > 0 {
+		avail := p.outerH - fixedChrome
+		if avail < 1 {
+			avail = 1
+		}
+		if avail < visibleLines {
+			visibleLines = avail
+		}
 	}
 
 	sep := func() string {
@@ -141,12 +162,11 @@ func (p ChannelInfoPopup) View() string {
 				lipgloss.NewStyle().Width(innerW).Foreground(lipgloss.Color("247")).Render("No members"),
 			}
 		} else {
-			end := p.scrollOff + maxMemberLines
+			end := p.scrollOff + visibleLines
 			if end > len(p.members) {
 				end = len(p.members)
 			}
 			for i := p.scrollOff; i < end; i++ {
-				label := "  @" + p.members[i].Username
 				if i == p.selectedIdx {
 					memberLines = append(memberLines, lipgloss.NewStyle().
 						Width(innerW).
@@ -158,11 +178,11 @@ func (p ChannelInfoPopup) View() string {
 					memberLines = append(memberLines, lipgloss.NewStyle().
 						Width(innerW).
 						Foreground(lipgloss.Color("247")).
-						Render(label))
+						Render("  @"+p.members[i].Username))
 				}
 			}
-			if len(p.members) > p.scrollOff+maxMemberLines {
-				remaining := len(p.members) - (p.scrollOff + maxMemberLines)
+			if len(p.members) > p.scrollOff+visibleLines {
+				remaining := len(p.members) - (p.scrollOff + visibleLines)
 				memberLines = append(memberLines, lipgloss.NewStyle().
 					Width(innerW).
 					Foreground(lipgloss.Color("241")).
