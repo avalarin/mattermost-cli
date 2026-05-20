@@ -143,6 +143,8 @@ func (p SearchPopup) SetSearching() SearchPopup {
 }
 
 // MoveUp moves the cursor up in the focused section.
+// In filter focus the layout has two rows: Sort (cursors 0,1) and Filter (cursor 2).
+// ↑ from cursor 2 jumps back to the Sort row (cursor 0).
 func (p SearchPopup) MoveUp() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -150,14 +152,15 @@ func (p SearchPopup) MoveUp() SearchPopup {
 			p.cursor--
 		}
 	case searchFocusFilter:
-		if p.filterCursor > 0 {
-			p.filterCursor--
+		if p.filterCursor == 2 {
+			p.filterCursor = 0
 		}
 	}
 	return p
 }
 
 // MoveDown moves the cursor down in the focused section.
+// In filter focus ↓ from any Sort cursor (0 or 1) jumps to the Filter row (cursor 2).
 func (p SearchPopup) MoveDown() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -165,9 +168,27 @@ func (p SearchPopup) MoveDown() SearchPopup {
 			p.cursor++
 		}
 	case searchFocusFilter:
-		if p.filterCursor < searchPopupFilterRows-1 {
-			p.filterCursor++
+		if p.filterCursor < 2 {
+			p.filterCursor = 2
 		}
+	}
+	return p
+}
+
+// MoveLeft moves the filter cursor left within the Sort row (cursor 1 → 0).
+// No-op when on the Filter row (cursor 2) or already at the leftmost Sort option.
+func (p SearchPopup) MoveLeft() SearchPopup {
+	if p.focus == searchFocusFilter && p.filterCursor == 1 {
+		p.filterCursor = 0
+	}
+	return p
+}
+
+// MoveRight moves the filter cursor right within the Sort row (cursor 0 → 1).
+// No-op when on the Filter row (cursor 2) or already at the rightmost Sort option.
+func (p SearchPopup) MoveRight() SearchPopup {
+	if p.focus == searchFocusFilter && p.filterCursor == 0 {
+		p.filterCursor = 1
 	}
 	return p
 }
@@ -277,9 +298,9 @@ func (p SearchPopup) View() string {
 
 	// Results list: compute max visible rows from available height.
 	// Fixed overhead per mode (including 2 for border):
-	//   local mode:  border(2) + query(1) + sep(1) + sep(1) + filter(1) + sep(1) + hotkeys(1) = 8
+	//   local mode:  border(2) + query(1) + sep(1) + sep(1) + header(1) + sort(1) + filter(1) + sep(1) + hotkeys(1) = 10
 	//   search mode: border(2) + query(1) + sep(1) + sep(1) + hotkeys(1) = 6
-	overhead := 8
+	overhead := 10
 	if p.IsSearchMode() {
 		overhead = 6
 	}
@@ -359,17 +380,27 @@ func (p SearchPopup) View() string {
 			return lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(text)
 		}
 
-		filterLine := "Sort: " +
+		headerStyle := lipgloss.NewStyle().Width(innerW).Foreground(lipgloss.Color("248")).Bold(true)
+		parts = append(parts, headerStyle.Render("Channel list settings"))
+
+		sortLine := "Sort: " +
 			renderFilterItem(0, alphaSymbol+" Alpha") + "  " +
-			renderFilterItem(1, lastSymbol+" Last msg") + "    " +
-			renderFilterItem(2, unreadSymbol+" Unread")
+			renderFilterItem(1, lastSymbol+" Last msg")
+		parts = append(parts, lipgloss.NewStyle().Width(innerW).Render(sortLine))
+
+		filterLine := "Filter: " + renderFilterItem(2, unreadSymbol+" Unread")
 		parts = append(parts, lipgloss.NewStyle().Width(innerW).Render(filterLine))
 	}
 
 	// Hotkeys bar.
 	parts = append(parts, sep())
-	hotkeys := "↑↓ navigate · Enter open · Esc close"
-	if !p.IsSearchMode() {
+	var hotkeys string
+	switch {
+	case p.IsSearchMode():
+		hotkeys = "↑↓ navigate · Enter open · Esc close"
+	case p.focus == searchFocusFilter:
+		hotkeys = "↑↓←→ navigate · Space select · Tab back · Esc close"
+	default:
 		hotkeys = "↑↓ navigate · Enter open · Tab filter · Esc close"
 	}
 	parts = append(parts, lipgloss.NewStyle().

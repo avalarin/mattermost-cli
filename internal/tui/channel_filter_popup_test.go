@@ -180,14 +180,14 @@ func TestSearchPopup_ToggleFilter(t *testing.T) {
 		t.Error("cursor=0 toggle should keep SortOrder=Alphabetical")
 	}
 
-	// Row 1 = Last message.
-	p = p.MoveDown()
+	// Row 1 = Last message (move right within Sort row).
+	p = p.MoveRight()
 	p = p.ToggleFilter()
 	if p.Filter().SortOrder != ChannelSortLastMessage {
 		t.Error("cursor=1 toggle should set SortOrder=LastMessage")
 	}
 
-	// Row 2 = Unread toggle.
+	// Row 2 = Unread toggle (move down to Filter row).
 	p = p.MoveDown()
 	p = p.ToggleFilter()
 	if !p.Filter().UnreadOnly {
@@ -198,7 +198,7 @@ func TestSearchPopup_ToggleFilter(t *testing.T) {
 func TestSearchPopup_OriginalPreservedOnEsc(t *testing.T) {
 	initial := ChannelFilterState{SortOrder: ChannelSortAlphabetical, UnreadOnly: false}
 	p := NewSearchPopup(initial, nil, nil)
-	p = p.ToggleFocus().MoveDown().ToggleFilter() // change sort to LastMessage
+	p = p.ToggleFocus().MoveRight().ToggleFilter() // move to Last msg cursor, change sort to LastMessage
 
 	if p.Filter().SortOrder != ChannelSortLastMessage {
 		t.Error("pending SortOrder should be LastMessage")
