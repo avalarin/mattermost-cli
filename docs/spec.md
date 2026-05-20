@@ -44,17 +44,29 @@ token = "your-personal-access-token"
 team  = "my-team"           # slug команды
 
 [ai]
-api_key = "sk-ant-..."      # или переменная ANTHROPIC_API_KEY
+api_key = ""                # или переменная ANTHROPIC_API_KEY
 model   = "claude-sonnet-4-6"
-enabled = true
+enabled = false
 
 [ui]
-date_format      = "15:04"       # или "2006-01-02 15:04"
-message_limit    = 100           # сколько сообщений грузить при открытии канала
-theme            = "auto"        # "auto" | "dark" | "light"
-channels_width   = 22            # ширина боковой панели каналов (символов)
-thread_width     = 40            # ширина панели треда (символов)
-channel_messages = "root_only"   # "root_only" | "all"
+date_format          = "15:04"       # или "2006-01-02 15:04"
+message_limit        = 100           # сколько сообщений грузить при открытии канала
+theme                = "auto"        # "auto" | "dark" | "light"
+channels_width       = 22            # ширина боковой панели каналов (символов)
+channel_messages     = "root_only"   # "root_only" | "all"
+show_mode_indicator  = true          # показывать индикатор режима в статус-баре
+
+[channels]
+sort          = "alphabetical"   # "alphabetical" | "last_message"
+unread_only   = false            # если true — скрывать каналы без непрочитанных
+archived_only = false            # если true — показывать только архивированные каналы
+
+[colors]
+active_header_bg = "237"         # фон заголовка активной панели; ANSI 256 или #RRGGBB
+active_header_fg = "15"          # текст заголовка активной панели
+
+[debug]
+# enabled = false                # включает структурированные логи в debug.log
 ```
 
 Переменные окружения `MATTERMOST_URL`, `MATTERMOST_TOKEN`, `ANTHROPIC_API_KEY` перекрывают значения из файла.
@@ -128,47 +140,38 @@ channel_messages = "root_only"   # "root_only" | "all"
 
 ---
 
-### M2 — Каналы, переключение, непрочитанные, треды
+### ✅ M2 — Каналы, переключение, непрочитанные, треды
 
 **Функциональность:**
 - Левая панель - channels: список каналов с бейджем непрочитанных (`#general (3)`). Счётчик непрочитанных — с сервера при старте, далее поддерживается через WS.
-	- ctrl+j - переход в channels
-	- В самом верху списка каналов есть **filters** - это специальные виртуальные каналы, которые работают как smart filters на клиенте
-		- По умолчанию есть только один фильтр - all messages
-		- Другие будем делать позже
-	- Канал помечается прочитанным, когда пользователь прокручивает ленту до последнего сообщения.
-	- текущий **открытый** канал подсвечивается белым фоном (текст черный)
-	- навиагация по стрелкам up/down и page up / page down, текущий **выбранный** канал подсвечивается светло серым цветом
-	- по enter канал **открывается** и показываются сообщения в нем
-	- просто при навигации происходит только **выбор**, не открытие
-	- при навигации есть скроллинг каналов
-	- при **открытии** канала обновляется окно messages
+	- `Ctrl+L` — переход в channels
+	- Тип канала обозначается префиксом: `#` (публичный/приватный), `@` (DM)
+	- Текущий **открытый** канал подсвечивается белым фоном (текст чёрный)
+	- Навигация стрелками up/down и page up/page down; текущий **выбранный** канал подсвечивается светло-серым цветом
+	- По `Enter` канал **открывается** и показываются его сообщения; просто навигация — только **выбор**, не открытие
+	- При навигации есть скроллинг каналов
+	- При **открытии** канала обновляется окно messages
+	- Канал помечается прочитанным **при уходе из него** (переходе на другой канал)
+	- Архивированные каналы видны с маркером `[x]`; открываются как обычные каналы
+	- `i` в ModeChannels — popup с информацией о выбранном канале (название, описание, участники)
 - Popup - thread_popup: показывает весь тред с полным текстом сообщений, без сокращений
-	- thread_popup перекрывает channels и messages, но input остается
-	- открытие по enter из секции messages на выбранном сообщении
-	- если выбрано сообщение без треда, от открывается сообщение
-	- если выбрано сообщение в треде, то открывается тред со всеми сообщениями, текущее сообщение выбрано
-	- по попапу навигация также как по основному окну messages
-	- внизу попапа команды которые можно выполнить над выбранным сообщением или тредом:
-		- e / edit - (только если текущий юзер - автор) редактирование, вставляется команда '/edit {текст сообщения}' и переход в input
-		- d / delete - (только если текущий юзер - автор) откроет popup удаления сообщения
-		- r  / reply in thread - вставляется команда '/reply' и переход в input
-	- когда происходит переход в input thread_popup остается открытым
+	- thread_popup — overlay поверх channels и messages; input остаётся внизу
+	- Открытие по `Enter` из секции messages на выбранном сообщении
+	- Навигация ↑/↓ по сообщениям внутри popup
+	- Горячие клавиши в popup: `r` — вставляет `/reply` в input и переходит в input; `e` — вставляет `/edit <текст>` (только автор); `d` — заглушка (реализация в M3)
+	- При переходе в input thread_popup остаётся открытым
 - Главная панель - messages
-	- Если выбран smart filter типа all messages, то там показываем все сообщения, даже ответы в тредах
-		- В этом случае если у сообщения есть ответы — бейдж `⤵︎ 3 messages`.
-		- А если сообщение является ответом на тред, то  бейдж `⤴︎ in thread`.
-	- Если выбран канал, то показываем только root сообщения
-		- В этом случае если у сообщения есть ответы — бейдж `⤵︎ 3 messages`.
+	- Если открыт «All Activity» — все сообщения, включая ответы в тредах; у ответов бейдж `⤴︎`
+	- Если открыт канал — только root-сообщения (при `channel_messages = "root_only"`); у сообщений с ответами бейдж `⤵︎ N`
 	- Просмотр треда: `Enter` на сообщении открывает thread_popup
-- Popup - search_channel: показывает окно поиска каналов
-	- ctrl+k - search_channel
-	- по мере ввода запросы на сервер
-	- ниже показываются пользователи и каналы
-	- навигация клавишами up/down
-	- открытие канала по enter, после этого канал станится выбранным в channels
-	- закрытие по ctrl+c или esc
-	- внизу показываем список горячих клавиш
+- Popup - search/sort/filter (`Ctrl+K`): объединённый popup поиска каналов/пользователей, сортировки и фильтрации
+	- При вводе < 2 символов — показывает все локальные каналы («All Activity» всегда первым)
+	- При вводе ≥ 2 символов — REST-поиск: каналы `#` + пользователи `@`
+	- Нижняя секция: сортировка (Alphabetical / Last message) и фильтры (Unread only / Archived only); изменения применяются при `Enter`, отменяются по `Esc`
+	- `Enter` на канале — открывает его, channels panel подсвечивает его открытым
+	- `Enter` на пользователе — открывает DM с ним
+	- Закрытие по `Ctrl+C` или `Esc`
+	- Внизу popup — список горячих клавиш
 
 **TUI Layout (M2):**
 ```
@@ -187,15 +190,18 @@ channel_messages = "root_only"   # "root_only" | "all"
 **Клавиши:**
 | Клавиша | Действие |
 |---|---|
-| `Ctrl+B` | Prefix-клавиша: +↑/→ messages, +↓ input, +← channels |
+| `Ctrl+B` | Prefix-клавиша (tmux-style): `+↑/→` messages, `+↓` input, `+←` channels |
 | `Ctrl+J` | Переход в messages |
 | `Ctrl+L` | Переход в channels |
-| `Ctrl+K` | Открыть search popup (каналы + пользователи) |
+| `Ctrl+K` | Открыть search/sort/filter popup |
+| `i` (в channels) | Открыть popup информации о канале |
 | `↑` / `↓` | Навигация по каналам / прокрутка сообщений |
 | `PgUp` / `PgDn` | Быстрая прокрутка |
 | `End` | Прыжок к последнему сообщению |
 | `Enter` (в channels) | Открыть выбранный канал |
 | `Enter` (в messages) | Открыть thread popup |
+| `r` (в thread popup) | Вставить `/reply` в input |
+| `e` (в thread popup, автор) | Вставить `/edit <текст>` в input |
 | `Esc` | Закрыть popup / вернуться в input |
 
 
@@ -280,50 +286,84 @@ AI-панель (`Ctrl+A`) занимает нижнюю треть экрана
 mattermost-cli/
 ├── cmd/
 │   └── mattermost-cli/
-│       └── main.go          # точка входа, CLI-флаги (--debug, --config)
+│       └── main.go                  # точка входа, CLI-флаги (--debug, --config)
 ├── internal/
-│   ├── config/              # загрузка config.toml + env override
-│   ├── mattermost/          # обёртка над MM SDK
-│   │   ├── client.go        # REST-методы (send, react, mark_read, ...)
-│   │   ├── websocket.go     # WS Events API, reconnect, exponential backoff
-│   │   └── types.go         # локальные типы (Message, Channel, Event)
-│   ├── store/               # единое состояние приложения
-│   │   ├── store.go         # in-memory state (активный канал, фокус, ...)
-│   │   └── db.go            # SQLite: чтение/запись messages, ai_history
-│   ├── ai/
-│   │   ├── agent.go         # Claude client, streaming, tool_use dispatch
-│   │   └── tools.go         # реализации инструментов AI
+│   ├── config/
+│   │   └── config.go                # загрузка TOML + env override + валидация
+│   ├── mattermost/
+│   │   ├── client.go                # REST-методы (send, react, mark_read, search, ...)
+│   │   ├── websocket.go             # WS Events API, reconnect, exponential backoff
+│   │   └── types.go                 # локальные типы (Message, Channel, User, Event)
+│   ├── store/
+│   │   ├── store.go                 # in-memory state: сообщения, per-channel кэш
+│   │   └── db.go                    # SQLite: messages, channels, ai_history
+│   ├── ai/                          # планируется в AI-milestone
+│   │   ├── agent.go
+│   │   └── tools.go
 │   └── tui/
-│       ├── model.go         # root Bubble Tea model
-│       ├── views/
-│       │   ├── feed.go      # M1: общая лента
-│       │   ├── channels.go  # M2: список каналов
-│       │   ├── messages.go  # M2: панель сообщений
-│       │   ├── thread.go    # M2: панель треда
-│       │   └── ai.go        # панель AI-агента
-│       ├── keys.go          # KeyMap для всех биндингов
-│       └── styles.go        # Lip Gloss стили
+│       ├── model.go                 # root Bubble Tea model
+│       ├── msgs.go                  # tea.Msg типы
+│       ├── keys.go                  # KeyMap для всех биндингов
+│       ├── styles.go                # Lip Gloss стили
+│       ├── command.go               # парсинг и регистрация команд
+│       ├── help.go                  # popup помощи
+│       ├── channels_view.go         # M2: боковая панель каналов
+│       ├── messages_view.go         # M2: панель сообщений (заменяет feed)
+│       ├── thread_popup.go          # M2: popup просмотра треда
+│       ├── channel_filter_popup.go  # M2: popup поиска + сортировки + фильтрации (Ctrl+K)
+│       ├── channel_info_popup.go    # M2: popup информации о канале (i)
+│       └── views/
+│           └── feed.go              # M1: общая лента (All Activity)
 └── docs/
     ├── spec.md
-    └── backlog.md
+    ├── backlog.md
+    ├── m1/                          # M1 спецификация + decision logs (T1–T9)
+    └── m2/                          # M2 спецификация + decision logs (T1–T8)
 ```
 
 ### Поток данных
 
 ```
-WebSocket Events
+WebSocket Events (MM API)
       │
       ▼
 mattermost/websocket.go
-      │   (chan Event)
-      ├──────────────────────► store/db.go (SQLite, кэш сообщений)
-      │
+      │  chan Event
       ▼
-store/store.go (in-memory state)
-      │   (tea.Cmd)
-      ▼
-tui/model.go → View (рендер TUI)
+tui/model.go (handlePostedEvent)
+      │  store.AddMessage()
+      ├──────────────────────────────► store/db.go (SQLite)
       │
+      │  если !activeChannel → обновить unread badge
+      │  если activeChannel → добавить в messages panel
+      ▼
+MessagesView + ChannelsView (re-render)
+
+Открытие канала (Enter):
+      User selects channel → MsgChannelSelected
+            │
+            ▼
+      client.GetChannelPosts(channelID, page, 100)  [tea.Cmd]
+            │
+            ▼
+      MsgChannelHistory → MessagesView populated
+
+Infinite scroll (скролл вверх до начала):
+      client.GetChannelPosts(channelID, nextPage, 100)  [tea.Cmd]
+            │
+            ▼
+      MsgChannelHistory{Prepend:true} → prepend to MessagesView
+
+Открытие треда (Enter на сообщении):
+      client.GetPostThread(postID)  [tea.Cmd]
+            │
+            ▼
+      MsgThreadLoaded → ThreadPopup populated
+
+Mark as read (при переключении на другой канал):
+      client.MarkChannelRead(prevChannelID)  [fire-and-forget tea.Cmd]
+
+(планируется в AI-milestone):
       └── (watched events) ──► ai/agent.go
                                     │
                                     ▼
@@ -348,11 +388,13 @@ tui/model.go → View (рендер TUI)
 
 | Область | Клавиши |
 |---|---|
-| Переключение панелей | `Tab` / `Shift+Tab` |
-| Список каналов (↑↓) | `↑` / `↓`, `Enter` для открытия, `/` для поиска |
+| Переключение панелей | `Ctrl+L` (channels), `Ctrl+J` (messages), `Ctrl+B + ←/↑/↓` (prefix) |
+| Список каналов | `↑` / `↓`, `PgUp`/`PgDn` навигация; `Enter` открыть; `i` инфо о канале |
 | Список сообщений | `↑` / `↓`, `PgUp` / `PgDn`, `End` для последнего |
-| Поле ввода сообщения | Стандартные стрелки и текстовые биндинги |
-| AI-панель | `Ctrl+A` — открыть/скрыть |
+| Thread popup | `↑` / `↓` навигация; `r` ответить; `e` редактировать; `Esc` закрыть |
+| Search/sort/filter popup | `Ctrl+K` открыть; `↑`/`↓` по результатам; `Enter` открыть/применить; `Esc` закрыть |
+| Поле ввода | Стандартные стрелки и текстовые биндинги; `Cmd+Enter` отправить |
+| AI-панель | `Ctrl+A` — открыть/скрыть (планируется) |
 | Командная строка | `/` — открыть, `Esc` — закрыть |
 | Очистить ввод | `Ctrl+C` (при непустом поле) |
 | Отмена / закрыть | `Esc` |
