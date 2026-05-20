@@ -2122,6 +2122,16 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchPopup = &p
 		return m, nil
 
+	case key.Matches(msg, m.keys.Left):
+		p = p.MoveLeft()
+		m.searchPopup = &p
+		return m, nil
+
+	case key.Matches(msg, m.keys.Right):
+		p = p.MoveRight()
+		m.searchPopup = &p
+		return m, nil
+
 	case msg.String() == "tab":
 		p = p.ToggleFocus()
 		m.searchPopup = &p
