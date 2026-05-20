@@ -30,10 +30,15 @@ A terminal TUI client for Mattermost, built with Go and [Bubble Tea](https://git
 - `e` — pre-fill `/edit <text>` for your own messages
 - `d` — stub for delete (coming in M3)
 
-**Channel search**
-- `Ctrl+K` opens a quick-search popup: type to filter channels and users in real time
-- REST search kicks in after 2 characters; fewer shows all local channels
+**Channel search, sort and filter**
+- `Ctrl+K` opens a unified popup: search channels and users, sort the sidebar, filter by unread or archived
+- Type to search: fewer than 2 characters shows all local channels; 2+ fires a REST search for channels (`#`) and users (`@`)
+- Bottom section: sort order (Alphabetical / Last message) and filters (Unread only / Archived only); `Enter` applies, `Esc` reverts
 - `Enter` on a user opens a DM channel
+
+**Channel info**
+- `i` while the channel list is focused opens a popup showing channel name, description, and members
+- Members load asynchronously; navigate with `↑`/`↓`; `Enter` on a member opens a DM with them
 
 **Connection**
 - WebSocket reconnect with exponential backoff (max 60 s, ±20% jitter)
@@ -49,11 +54,14 @@ A terminal TUI client for Mattermost, built with Go and [Bubble Tea](https://git
 |---|---|
 | `Ctrl+L` | Focus channel list |
 | `Ctrl+J` | Focus message panel |
-| `Ctrl+K` | Open channel/user search popup |
+| `Ctrl+K` | Open search / sort / filter popup |
 | `Ctrl+B` | Prefix key (tmux-style): `+←` channels, `+↑/→` messages, `+↓` input |
+| `i` (in channels) | Open channel info popup |
 | `↑` / `↓` | Navigate channels (select only) or scroll messages |
 | `PgUp` / `PgDn` | Fast scroll |
 | `Enter` | Open channel / open thread |
+| `r` (in thread popup) | Insert `/reply` into input |
+| `e` (in thread popup, author) | Insert `/edit <text>` into input |
 | `Esc` | Return to input / close popup |
 | `/` | Open command mode |
 | `/quit` | Exit |
