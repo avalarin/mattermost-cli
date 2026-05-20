@@ -34,7 +34,10 @@ const (
 	searchFocusFilter                     // ↑/↓ navigates sort/filter controls
 )
 
-const searchPopupFilterRows = 3 // Alphabetical, Last message, Unread only
+const searchPopupFilterRows = 4 // Alphabetical, Last message, Unread only, Archived only
+
+// filterRowStart is the filterCursor value for the first filter checkbox row (Unread).
+const filterRowStart = 2
 
 // SearchPopup is the unified channel/user search + sort/filter overlay (Ctrl+K).
 // All mutation methods use value receivers and return a new SearchPopup.
@@ -92,6 +95,9 @@ func (p SearchPopup) Original() ChannelFilterState { return p.original }
 
 // IsSearchMode returns true when query has 2+ runes (REST search mode).
 func (p SearchPopup) IsSearchMode() bool { return len([]rune(p.query)) >= 2 }
+
+// Focus returns the current focused section.
+func (p SearchPopup) Focus() searchFocus { return p.focus }
 
 // TypeChar appends a rune to the query and refreshes local results if not in search mode.
 func (p SearchPopup) TypeChar(r rune) SearchPopup {
@@ -155,12 +161,11 @@ func (p SearchPopup) SetError(msg string) SearchPopup {
 // Searching reports whether a REST search is currently in-flight.
 func (p SearchPopup) Searching() bool { return p.searching }
 
-// filterLastRow is the filterCursor value for the last filter row (Unread).
+// filterLastRow is the filterCursor value for the last filter row (Archived).
 const filterLastRow = searchPopupFilterRows - 1
 
 // MoveUp moves the cursor up in the focused section.
-// In filter focus the layout has two rows: Sort (cursors 0,1) and Filter (cursor filterLastRow).
-// ↑ from the Filter row jumps back to the Sort row (cursor 0).
+// In filter focus: ↑ from any checkbox row (Unread/Archived) jumps back to Sort row (cursor 0).
 func (p SearchPopup) MoveUp() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -168,7 +173,7 @@ func (p SearchPopup) MoveUp() SearchPopup {
 			p.cursor--
 		}
 	case searchFocusFilter:
-		if p.filterCursor == filterLastRow {
+		if p.filterCursor >= filterRowStart {
 			p.filterCursor = 0
 		}
 	}
@@ -176,7 +181,7 @@ func (p SearchPopup) MoveUp() SearchPopup {
 }
 
 // MoveDown moves the cursor down in the focused section.
-// In filter focus ↓ from any Sort cursor jumps to the Filter row (filterLastRow).
+// In filter focus: ↓ from any Sort cursor jumps to the first checkbox row (Unread).
 func (p SearchPopup) MoveDown() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -184,27 +189,37 @@ func (p SearchPopup) MoveDown() SearchPopup {
 			p.cursor++
 		}
 	case searchFocusFilter:
-		if p.filterCursor < filterLastRow {
-			p.filterCursor = filterLastRow
+		if p.filterCursor < filterRowStart {
+			p.filterCursor = filterRowStart
 		}
 	}
 	return p
 }
 
-// MoveLeft moves the filter cursor left within the Sort row (cursor 1 → 0).
-// No-op on the Filter row or when already at the leftmost Sort option.
+// MoveLeft moves the filter cursor left.
+// Sort row: cursor 1 → 0. Checkbox row: cursor 3 (Archived) → 2 (Unread).
 func (p SearchPopup) MoveLeft() SearchPopup {
-	if p.focus == searchFocusFilter && p.filterCursor == 1 {
-		p.filterCursor = 0
+	if p.focus == searchFocusFilter {
+		switch p.filterCursor {
+		case 1:
+			p.filterCursor = 0
+		case filterLastRow:
+			p.filterCursor = filterRowStart
+		}
 	}
 	return p
 }
 
-// MoveRight moves the filter cursor right within the Sort row (cursor 0 → 1).
-// No-op on the Filter row or when already at the rightmost Sort option.
+// MoveRight moves the filter cursor right.
+// Sort row: cursor 0 → 1. Checkbox row: cursor 2 (Unread) → 3 (Archived).
 func (p SearchPopup) MoveRight() SearchPopup {
-	if p.focus == searchFocusFilter && p.filterCursor == 0 {
-		p.filterCursor = 1
+	if p.focus == searchFocusFilter {
+		switch p.filterCursor {
+		case 0:
+			p.filterCursor = 1
+		case filterRowStart:
+			p.filterCursor = filterLastRow
+		}
 	}
 	return p
 }
@@ -218,6 +233,8 @@ func (p SearchPopup) ToggleFilter() SearchPopup {
 		p.filter.SortOrder = ChannelSortLastMessage
 	case 2:
 		p.filter.UnreadOnly = !p.filter.UnreadOnly
+	case filterLastRow:
+		p.filter.ArchivedOnly = !p.filter.ArchivedOnly
 	}
 	if !p.IsSearchMode() {
 		p.results = p.buildLocalResults()
@@ -254,6 +271,9 @@ func (p SearchPopup) buildLocalResults() []searchResultItem {
 	channels := make([]mattermost.Channel, 0, len(p.localChannels))
 	for _, ch := range p.localChannels {
 		if p.filter.UnreadOnly && p.unreadCounts[ch.ID] == 0 {
+			continue
+		}
+		if p.filter.ArchivedOnly && ch.DeleteAt == 0 {
 			continue
 		}
 		label := channelLabel(channelItem{channel: ch})
@@ -393,6 +413,10 @@ func (p SearchPopup) View(spinnerFrame string) string {
 		if p.filter.UnreadOnly {
 			unreadSymbol = "☑"
 		}
+		archivedSymbol := "☐"
+		if p.filter.ArchivedOnly {
+			archivedSymbol = "☑"
+		}
 
 		renderFilterItem := func(idx int, text string) string {
 			if p.focus == searchFocusFilter && idx == p.filterCursor {
@@ -412,7 +436,9 @@ func (p SearchPopup) View(spinnerFrame string) string {
 			renderFilterItem(1, lastSymbol+" Last msg")
 		parts = append(parts, lipgloss.NewStyle().Width(innerW).Render(sortLine))
 
-		filterLine := "Filter: " + renderFilterItem(2, unreadSymbol+" Unread")
+		filterLine := "Filter: " +
+			renderFilterItem(filterRowStart, unreadSymbol+" Unread") + "  " +
+			renderFilterItem(filterLastRow, archivedSymbol+" Archived")
 		parts = append(parts, lipgloss.NewStyle().Width(innerW).Render(filterLine))
 	}
 
@@ -421,11 +447,11 @@ func (p SearchPopup) View(spinnerFrame string) string {
 	var hotkeys string
 	switch {
 	case p.IsSearchMode():
-		hotkeys = "↑↓ navigate · Enter open · Esc close"
+		hotkeys = "↑↓ navigate · Enter open · Esc discard"
 	case p.focus == searchFocusFilter:
-		hotkeys = "↑↓←→ navigate · Space select · Tab back · Esc close"
+		hotkeys = "↑↓←→ navigate · Space toggle · Enter apply · Tab back · Esc discard"
 	default:
-		hotkeys = "↑↓ navigate · Enter open · Tab filter · Esc close"
+		hotkeys = "↑↓ navigate · Enter open · Tab filter · Esc discard"
 	}
 	parts = append(parts, lipgloss.NewStyle().
 		Width(innerW).

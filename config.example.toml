@@ -22,3 +22,7 @@ active_header_fg = "15"       # foreground of the active panel header
 [channels]
 # sort = "alphabetical"   # "alphabetical" | "last_message"
 # unread_only = false     # when true, hide channels with no unread messages
+# archived_only = false   # when true, show only archived/deleted channels
+
+# [debug]
+# enabled = false         # write structured logs to debug.log (same as --debug flag)

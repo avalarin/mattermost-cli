@@ -225,3 +225,107 @@ func TestWithSortFilter_UnreadOnlyAllRead(t *testing.T) {
 		t.Error("the single remaining item should be All Activity")
 	}
 }
+
+func TestArchivedChannelRendersWithMarker(t *testing.T) {
+	cv := NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "archived-channel", DeleteAt: 1234567890},
+	})
+	cv = cv.SetSize(22, 10)
+	cv = cv.WithSortAndFilter(ChannelFilterState{}, nil)
+	rendered := cv.View()
+	if !strings.Contains(rendered, "[x]") {
+		t.Errorf("archived channel should render with [x] marker, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "archived-channel") {
+		t.Errorf("archived channel name should appear in rendered view, got:\n%s", rendered)
+	}
+}
+
+func TestInfoKeyOpensPopup(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channelsView = NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	m.channelsView = m.channelsView.SetSize(22, 20)
+	m.channelsView = m.channelsView.WithSortAndFilter(ChannelFilterState{}, nil)
+	m.channelsView = m.channelsView.MoveDown() // select ch1 (index 1)
+	m.mode = ModeChannels
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if m.infoPopup == nil {
+		t.Fatal("expected infoPopup to be non-nil after pressing i in ModeChannels")
+	}
+	if m.mode != ModeInfo {
+		t.Errorf("expected ModeInfo after pressing i, got %v", m.mode)
+	}
+}
+
+func TestInfoPopupEscCloses(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channelsView = NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	m.channelsView = m.channelsView.SetSize(22, 20)
+	m.channelsView = m.channelsView.MoveDown()
+	m.mode = ModeChannels
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if m.infoPopup == nil {
+		t.Fatal("expected infoPopup open before Esc")
+	}
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.infoPopup != nil {
+		t.Error("expected infoPopup to be nil after Esc")
+	}
+	if m.mode != ModeChannels {
+		t.Errorf("expected ModeChannels after Esc from info popup, got %v", m.mode)
+	}
+}
+
+func TestInfoPopupEnterCloses(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channelsView = NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "general"},
+	})
+	m.channelsView = m.channelsView.SetSize(22, 20)
+	m.channelsView = m.channelsView.MoveDown()
+	m.mode = ModeChannels
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if m.infoPopup == nil {
+		t.Fatal("expected infoPopup open before Enter")
+	}
+
+	m = sendKey(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.infoPopup != nil {
+		t.Error("expected infoPopup to be nil after Enter")
+	}
+	if m.mode != ModeChannels {
+		t.Errorf("expected ModeChannels after Enter from info popup, got %v", m.mode)
+	}
+}
+
+func TestArchivedChannelEnterOpens(t *testing.T) {
+	m := initModel(t, NewModel())
+	m.channelsView = NewChannelsView([]mattermost.Channel{
+		{ID: "ch1", Name: "archived-channel", DeleteAt: 1234567890},
+	})
+	m.channelsView = m.channelsView.SetSize(22, 20)
+	m.channelsView = m.channelsView.WithSortAndFilter(ChannelFilterState{}, nil)
+	m.channelsView = m.channelsView.MoveDown() // move cursor from All Activity to the archived channel
+	m.mode = ModeChannels
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected a cmd from Enter on archived channel")
+	}
+	msg := cmd()
+	sel, ok := msg.(MsgChannelSelected)
+	if !ok {
+		t.Fatalf("expected MsgChannelSelected, got %T", msg)
+	}
+	if sel.ChannelID != "ch1" {
+		t.Errorf("expected ChannelID=ch1, got %q", sel.ChannelID)
+	}
+}

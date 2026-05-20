@@ -43,6 +43,8 @@ const (
 	ModeThread
 	// ModeSearch is the unified channel/user search + sort/filter popup mode.
 	ModeSearch
+	// ModeInfo is the channel info popup mode.
+	ModeInfo
 )
 
 const (
@@ -108,6 +110,8 @@ type Model struct {
 	searchGen         int                // incremented on each search to discard stale MsgSearchResults
 	channelSortFilter ChannelFilterState // currently applied sort/filter state
 
+	infoPopup *ChannelInfoPopup // non-nil when the channel info popup is open
+
 	unreadCounts map[string]int // channelID → unread message count
 
 	ctx    context.Context
@@ -166,7 +170,8 @@ func NewModel() Model {
 // whether to display the mode indicator in the status bar, the full-date format
 // used for messages not sent today (Go time layout, e.g. "02.01.2006"), the
 // channel_messages setting ("root_only" | "all"), the initial channel sort order
-// ("alphabetical" | "last_message"), and whether to show only unread channels.
+// ("alphabetical" | "last_message"), whether to show only unread channels, and
+// whether to show only archived channels in the sidebar (archived_only filter).
 func NewModelWithHeader(
 	header HeaderInfo,
 	status string,
@@ -185,6 +190,7 @@ func NewModelWithHeader(
 	threadPopupWidthPct int,
 	channelSort string,
 	channelUnreadOnly bool,
+	channelArchivedOnly bool,
 ) Model {
 	m := NewModel()
 	m.header = header
@@ -246,10 +252,9 @@ func NewModelWithHeader(
 	if channelSort == "last_message" {
 		sortOrder = ChannelSortLastMessage
 	}
-	m.channelSortFilter = ChannelFilterState{SortOrder: sortOrder, UnreadOnly: channelUnreadOnly}
-	if sortOrder != ChannelSortAlphabetical || channelUnreadOnly {
-		m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, nil)
-	}
+	m.channelSortFilter = ChannelFilterState{SortOrder: sortOrder, UnreadOnly: channelUnreadOnly, ArchivedOnly: channelArchivedOnly}
+	// Always call WithSortAndFilter so the archived filter is applied regardless of sort/unread settings.
+	m.channelsView = m.channelsView.WithSortAndFilter(m.channelSortFilter, nil)
 
 	m.messagesView = NewMessagesView(st).SetFullDateFormat(fullDateFormat).SetAllActivity(true)
 	m.registry = buildRegistry(client, teamID, m.cancel)
@@ -714,6 +719,17 @@ func markReadCmd(client *mattermost.Client, channelID string) tea.Cmd {
 	}
 }
 
+// loadMembersCmd fetches channel members and returns MsgChannelMembersLoaded.
+func loadMembersCmd(client *mattermost.Client, channelID string) tea.Cmd {
+	return func() tea.Msg {
+		if client == nil {
+			return MsgChannelMembersLoaded{ChannelID: channelID, Err: errors.New("not connected")}
+		}
+		members, err := client.GetChannelMembers(channelID)
+		return MsgChannelMembersLoaded{ChannelID: channelID, Members: members, Err: err}
+	}
+}
+
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -845,6 +861,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		p := m.searchPopup.SetSearchResults(msg.Channels, msg.Users)
 		m.searchPopup = &p
+		return m, nil
+
+	case MsgChannelMembersLoaded:
+		if m.infoPopup != nil && msg.ChannelID == m.infoPopup.ChannelID() {
+			p := m.infoPopup.SetMembers(msg.Members)
+			m.infoPopup = &p
+		}
 		return m, nil
 
 	case MsgEscTimeout:
@@ -1290,6 +1313,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKeyThread(msg)
 	case ModeSearch:
 		return m.handleKeySearch(msg)
+	case ModeInfo:
+		return m.handleKeyInfo(msg)
 	}
 	return m, nil
 }
@@ -1489,13 +1514,6 @@ func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case key.Matches(msg, m.keys.Send): // enter → open channel
-		if m.channelsView.IsSelectedArchived() {
-			name := m.channelsView.SelectedDisplayName()
-			m.statusMsg = "Channel " + name + " is archived"
-			m.statusIsError = true
-			m.statusGen++
-			return m, clearStatusAfter(3*time.Second, m.statusGen)
-		}
 		prevID := m.activeChannelID
 		var channelID string
 		m.channelsView, channelID = m.channelsView.OpenSelected()
@@ -1505,6 +1523,13 @@ func (m Model) handleKeyChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			markCmd = markReadCmd(m.client, prevID)
 		}
 		return m, tea.Batch(markCmd, func() tea.Msg { return MsgChannelSelected{ChannelID: channelID} })
+	}
+
+	if msg.Type == tea.KeyRunes && string(msg.Runes) == "i" {
+		ch, ok := m.channelsView.SelectedChannel()
+		if ok {
+			return m.openInfoPopup(ch)
+		}
 	}
 
 	return m, nil
@@ -1739,6 +1764,8 @@ func (m Model) View() string {
 		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.searchPopup.View(m.spinner.View()))
 	} else if m.threadPopup != nil {
 		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.threadPopup.View())
+	} else if m.infoPopup != nil {
+		body = lipgloss.Place(m.width, m.feedH, lipgloss.Center, lipgloss.Center, m.infoPopup.View())
 	} else {
 		body = m.renderBody()
 	}
@@ -1854,11 +1881,12 @@ func (m Model) renderDivider() string {
 func (m Model) renderStatusBar() string {
 	// Compute badge first so we know the actual width available for the message.
 	modeLabels := map[Mode]string{
-		ModeMessages:      "[MESSAGES]",
-		ModeChannels:      "[CHANNELS]",
-		ModeHelp:          "[HELP]",
-		ModeThread:        "[THREAD]",
-		ModeSearch: "[SEARCH]",
+		ModeMessages: "[MESSAGES]",
+		ModeChannels: "[CHANNELS]",
+		ModeHelp:     "[HELP]",
+		ModeThread:   "[THREAD]",
+		ModeSearch:   "[SEARCH]",
+		ModeInfo:     "[INFO]",
 	}
 	badge, hasBadge := modeLabels[m.mode]
 	if !m.showModeIndicator {
@@ -2126,6 +2154,58 @@ func (m Model) closeSearchPopup(apply bool) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) openInfoPopup(ch mattermost.Channel) (tea.Model, tea.Cmd) {
+	outerW := m.width - 4
+	if outerW > 64 {
+		outerW = 64
+	}
+	if outerW < 24 {
+		outerW = 24
+	}
+	outerH := m.feedH - 4
+	if outerH < 8 {
+		outerH = 8
+	}
+	popup := NewChannelInfoPopup(ch)
+	popup = popup.SetSize(outerW, outerH)
+	m.infoPopup = &popup
+	m.mode = ModeInfo
+	return m, loadMembersCmd(m.client, ch.ID)
+}
+
+func (m Model) handleKeyInfo(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.infoPopup == nil {
+		m.mode = ModeChannels
+		return m, nil
+	}
+	switch {
+	case key.Matches(msg, m.keys.Cancel): // Esc → close
+		m.infoPopup = nil
+		m.mode = ModeChannels
+		return m, nil
+
+	case key.Matches(msg, m.keys.Up):
+		p := m.infoPopup.MoveUp()
+		m.infoPopup = &p
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down):
+		p := m.infoPopup.MoveDown()
+		m.infoPopup = &p
+		return m, nil
+
+	case key.Matches(msg, m.keys.Send): // Enter → open DM with selected member
+		user, ok := m.infoPopup.SelectedMember()
+		m.infoPopup = nil
+		m.mode = ModeChannels
+		if ok {
+			return m, findOrCreateDMCmd(m.client, m.teamID, user.ID)
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.searchPopup == nil {
 		return m, nil
@@ -2133,7 +2213,7 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p := *m.searchPopup
 
 	switch {
-	case key.Matches(msg, m.keys.Cancel): // Esc — close, restore original filter
+	case key.Matches(msg, m.keys.Cancel): // Esc — discard changes, close
 		return m.closeSearchPopup(false)
 
 	case key.Matches(msg, m.keys.Up):
@@ -2166,7 +2246,10 @@ func (m Model) handleKeySearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.searchPopup = &p
 		return m, nil
 
-	case key.Matches(msg, m.keys.Send): // Enter — open selected item
+	case key.Matches(msg, m.keys.Send): // Enter — apply filter (filter focus) or open channel (results focus)
+		if p.Focus() == searchFocusFilter {
+			return m.closeSearchPopup(true)
+		}
 		item, ok := p.SelectedItem()
 		if !ok {
 			return m, nil

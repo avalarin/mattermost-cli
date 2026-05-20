@@ -53,7 +53,7 @@ func main() {
 
 	// Allow debug = true in the config file (useful for dev configs).
 	if !*debug {
-		if cfg, err := config.Load(resolvedConfig); err == nil && cfg.Debug {
+		if cfg, err := config.Load(resolvedConfig); err == nil && cfg.Debug.Enabled {
 			*debug = true
 		}
 	}
@@ -111,7 +111,7 @@ func main() {
 		statusCh = wsClient.Status()
 	}
 
-	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages, threadPopupWidthPct, cfg.Channels.Sort, cfg.Channels.UnreadOnly)
+	m := tui.NewModelWithHeader(header, status, eventsCh, statusCh, channels, st, restClient, teamID, channelsWidth, showModeIndicator, activeHeaderFg, activeHeaderBg, fullDateFormat, channelMessages, threadPopupWidthPct, cfg.Channels.Sort, cfg.Channels.UnreadOnly, cfg.Channels.ArchivedOnly)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

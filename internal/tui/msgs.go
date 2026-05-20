@@ -114,6 +114,13 @@ type MsgSearchDebounce struct {
 	Query string
 }
 
+// MsgChannelMembersLoaded carries the result of a channel members REST load.
+type MsgChannelMembersLoaded struct {
+	ChannelID string
+	Members   []mattermost.User
+	Err       error
+}
+
 // MsgThreadLoaded carries the result of a thread REST load.
 type MsgThreadLoaded struct {
 	RootID         string

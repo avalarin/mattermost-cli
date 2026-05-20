@@ -22,8 +22,9 @@ const (
 
 // ChannelFilterState holds the sort+filter configuration for the channel list.
 type ChannelFilterState struct {
-	SortOrder  ChannelSortOrder
-	UnreadOnly bool
+	SortOrder    ChannelSortOrder
+	UnreadOnly   bool
+	ArchivedOnly bool // when true, only archived (DeleteAt > 0) channels are shown
 }
 
 type channelItem struct {
@@ -34,8 +35,9 @@ type channelItem struct {
 // ChannelsView renders the channels sidebar.
 // All mutation methods use value receivers and return a new ChannelsView.
 type ChannelsView struct {
-	items       []channelItem
-	selectedIdx int // cursor position
+	rawItems    []channelItem // canonical list, never filtered (set once in NewChannelsView)
+	items       []channelItem // current display list (filtered/sorted)
+	selectedIdx int           // cursor position
 	openIdx     int // currently open channel (-1 initially, 0 = All Activity)
 	scrollOff   int // index of first visible item
 	width           int
@@ -66,12 +68,16 @@ func NewChannelsView(channels []mattermost.Channel) ChannelsView {
 	for _, ch := range sorted {
 		items = append(items, channelItem{channel: ch})
 	}
+	rawItems := make([]channelItem, len(items))
+	copy(rawItems, items)
 	return ChannelsView{
+		rawItems:    rawItems,
 		items:       items,
 		selectedIdx: 0,
 		openIdx:     0, // All Activity is open by default
 	}
 }
+
 
 // SetSize sets the width and height of the channels view.
 func (cv ChannelsView) SetSize(w, h int) ChannelsView {
@@ -81,7 +87,8 @@ func (cv ChannelsView) SetSize(w, h int) ChannelsView {
 }
 
 // ChannelList returns the slice of channels (excluding the All Activity sentinel),
-// with resolved DM display names already applied.
+// with resolved DM display names already applied. The list reflects the current filter
+// state (e.g. ArchivedOnly or UnreadOnly). Use m.channelsRaw for the full unfiltered list.
 func (cv ChannelsView) ChannelList() []mattermost.Channel {
 	channels := make([]mattermost.Channel, 0, len(cv.items))
 	for _, item := range cv.items {
@@ -196,6 +203,19 @@ func (cv ChannelsView) SetOpenByID(channelID string) ChannelsView {
 	return cv
 }
 
+// SelectedChannel returns the channel of the selected item.
+// Returns (channel, true) for a real channel, (zero, false) for All Activity or empty list.
+func (cv ChannelsView) SelectedChannel() (mattermost.Channel, bool) {
+	if cv.selectedIdx < 0 || cv.selectedIdx >= len(cv.items) {
+		return mattermost.Channel{}, false
+	}
+	item := cv.items[cv.selectedIdx]
+	if item.isAll {
+		return mattermost.Channel{}, false
+	}
+	return item.channel, true
+}
+
 // IsSelectedArchived returns true if the selected channel has DeleteAt > 0.
 func (cv ChannelsView) IsSelectedArchived() bool {
 	if cv.selectedIdx < 0 || cv.selectedIdx >= len(cv.items) {
@@ -252,17 +272,25 @@ func (cv ChannelsView) SetUnreadCounts(counts map[string]int) ChannelsView {
 	return cv
 }
 
-// ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
-func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
-	cv.items = append([]channelItem(nil), cv.items...)
-	for i, item := range cv.items {
+// applyNamesToItems returns a copy of items with DM DisplayNames updated from names.
+func applyNamesToItems(items []channelItem, names map[string]string) []channelItem {
+	out := append([]channelItem(nil), items...)
+	for i, item := range out {
 		if item.isAll {
 			continue
 		}
 		if name, ok := names[item.channel.ID]; ok {
-			cv.items[i].channel.DisplayName = name
+			out[i].channel.DisplayName = name
 		}
 	}
+	return out
+}
+
+// ApplyDMNames updates DisplayName for DM channels from the given map (channelID → displayName).
+// Both rawItems and items are updated so that subsequent WithSortAndFilter calls use correct names.
+func (cv ChannelsView) ApplyDMNames(names map[string]string) ChannelsView {
+	cv.items = applyNamesToItems(cv.items, names)
+	cv.rawItems = applyNamesToItems(cv.rawItems, names)
 	return cv
 }
 
@@ -286,12 +314,15 @@ func (cv ChannelsView) WithSortAndFilter(state ChannelFilterState, unreadCounts 
 
 	var allItem channelItem
 	var rest []channelItem
-	for _, item := range cv.items {
+	for _, item := range cv.rawItems {
 		if item.isAll {
 			allItem = item
-		} else {
-			rest = append(rest, item)
+			continue
 		}
+		if state.ArchivedOnly && item.channel.DeleteAt == 0 {
+			continue // archived-only filter: hide non-archived channels
+		}
+		rest = append(rest, item)
 	}
 
 	if state.UnreadOnly {

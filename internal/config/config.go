@@ -11,7 +11,7 @@ import (
 var ErrMissingRequiredField = errors.New("missing required field")
 
 type Config struct {
-	Debug    bool `toml:"debug"`
+	Debug    DebugConfig `toml:"debug"`
 	Server   ServerConfig
 	AI       AIConfig
 	UI       UIConfig
@@ -19,10 +19,16 @@ type Config struct {
 	Channels ChannelsConfig
 }
 
+// DebugConfig holds debug/diagnostic feature flags.
+type DebugConfig struct {
+	Enabled bool `toml:"enabled"`
+}
+
 // ChannelsConfig holds channel list display preferences.
 type ChannelsConfig struct {
-	Sort       string `toml:"sort"`        // "alphabetical" | "last_message"; default "alphabetical"
-	UnreadOnly bool   `toml:"unread_only"` // default false
+	Sort         string `toml:"sort"`          // "alphabetical" | "last_message"; default "alphabetical"
+	UnreadOnly   bool   `toml:"unread_only"`   // default false
+	ArchivedOnly bool   `toml:"archived_only"` // when true, show only archived channels
 }
 
 // ColorsConfig holds terminal color overrides (256-color ANSI codes or hex RGB).

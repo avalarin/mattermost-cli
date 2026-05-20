@@ -357,3 +357,37 @@ func TestSearchUsers_OK(t *testing.T) {
 		t.Errorf("user.Username = %q, want %q", users[0].Username, "alice")
 	}
 }
+
+func TestGetChannelMembers_OK(t *testing.T) {
+	_, client := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v4/channels/chan1/members" && r.Method == http.MethodGet:
+			writeJSON(w, []map[string]string{
+				{"channel_id": "chan1", "user_id": "u1"},
+				{"channel_id": "chan1", "user_id": "u2"},
+			})
+		case r.URL.Path == "/api/v4/users/ids" && r.Method == http.MethodPost:
+			writeJSON(w, []map[string]string{
+				{"id": "u1", "username": "alice"},
+				{"id": "u2", "username": "bob"},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	users, err := client.GetChannelMembers("chan1")
+	if err != nil {
+		t.Fatalf("GetChannelMembers() error: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("expected 2 users, got %d", len(users))
+	}
+	usernames := make(map[string]bool)
+	for _, u := range users {
+		usernames[u.Username] = true
+	}
+	if !usernames["alice"] || !usernames["bob"] {
+		t.Errorf("expected alice and bob, got %v", usernames)
+	}
+}

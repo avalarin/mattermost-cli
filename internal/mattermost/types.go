@@ -26,6 +26,7 @@ type Channel struct {
 	DeleteAt      int64  `json:"delete_at"`       // non-zero = archived
 	LastPostAt    int64  `json:"last_post_at"`
 	TotalMsgCount int64  `json:"total_msg_count"` // total messages in channel
+	Purpose       string `json:"purpose"`          // channel description / topic
 }
 
 // ChannelMember holds a user's read position and mention count for one channel.

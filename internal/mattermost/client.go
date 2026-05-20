@@ -127,10 +127,11 @@ func (c *Client) GetTeamByName(name string) (*Team, error) {
 	return &t, nil
 }
 
-// GetChannelsForTeam retrieves all channels the current user is a member of in a team.
+// GetChannelsForTeam retrieves all channels the current user is a member of in a team,
+// including archived channels (include_deleted=true).
 func (c *Client) GetChannelsForTeam(teamID string) ([]Channel, error) {
 	var channels []Channel
-	if err := c.get(fmt.Sprintf("/users/me/teams/%s/channels", teamID), &channels); err != nil {
+	if err := c.getQ(fmt.Sprintf("/users/me/teams/%s/channels", teamID), "include_deleted=true", &channels); err != nil {
 		return nil, err
 	}
 	return channels, nil
@@ -293,6 +294,33 @@ func (c *Client) GetMyChannelMembersForTeam(teamID string) (map[string]ChannelMe
 		result[m.ChannelID] = m
 	}
 	return result, nil
+}
+
+// GetChannelMembers returns the users who are members of the given channel.
+// It fetches up to 100 members then resolves their usernames via GetUsersByIDs.
+func (c *Client) GetChannelMembers(channelID string) ([]User, error) {
+	var members []ChannelMember
+	if err := c.getQ(fmt.Sprintf("/channels/%s/members", channelID), "per_page=100", &members); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.UserID != "" {
+			ids = append(ids, m.UserID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	byID, err := c.GetUsersByIDs(ids)
+	if err != nil {
+		return nil, err
+	}
+	users := make([]User, 0, len(byID))
+	for _, u := range byID {
+		users = append(users, u)
+	}
+	return users, nil
 }
 
 // MarkChannelRead marks a channel as read for the current user.
