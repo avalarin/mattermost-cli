@@ -155,9 +155,12 @@ func (p SearchPopup) SetError(msg string) SearchPopup {
 // Searching reports whether a REST search is currently in-flight.
 func (p SearchPopup) Searching() bool { return p.searching }
 
+// filterLastRow is the filterCursor value for the last filter row (Unread).
+const filterLastRow = searchPopupFilterRows - 1
+
 // MoveUp moves the cursor up in the focused section.
-// In filter focus the layout has two rows: Sort (cursors 0,1) and Filter (cursor 2).
-// ↑ from cursor 2 jumps back to the Sort row (cursor 0).
+// In filter focus the layout has two rows: Sort (cursors 0,1) and Filter (cursor filterLastRow).
+// ↑ from the Filter row jumps back to the Sort row (cursor 0).
 func (p SearchPopup) MoveUp() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -165,7 +168,7 @@ func (p SearchPopup) MoveUp() SearchPopup {
 			p.cursor--
 		}
 	case searchFocusFilter:
-		if p.filterCursor == 2 {
+		if p.filterCursor == filterLastRow {
 			p.filterCursor = 0
 		}
 	}
@@ -173,7 +176,7 @@ func (p SearchPopup) MoveUp() SearchPopup {
 }
 
 // MoveDown moves the cursor down in the focused section.
-// In filter focus ↓ from any Sort cursor (0 or 1) jumps to the Filter row (cursor 2).
+// In filter focus ↓ from any Sort cursor jumps to the Filter row (filterLastRow).
 func (p SearchPopup) MoveDown() SearchPopup {
 	switch p.focus {
 	case searchFocusResults:
@@ -181,15 +184,15 @@ func (p SearchPopup) MoveDown() SearchPopup {
 			p.cursor++
 		}
 	case searchFocusFilter:
-		if p.filterCursor < 2 {
-			p.filterCursor = 2
+		if p.filterCursor < filterLastRow {
+			p.filterCursor = filterLastRow
 		}
 	}
 	return p
 }
 
 // MoveLeft moves the filter cursor left within the Sort row (cursor 1 → 0).
-// No-op when on the Filter row (cursor 2) or already at the leftmost Sort option.
+// No-op on the Filter row or when already at the leftmost Sort option.
 func (p SearchPopup) MoveLeft() SearchPopup {
 	if p.focus == searchFocusFilter && p.filterCursor == 1 {
 		p.filterCursor = 0
@@ -198,7 +201,7 @@ func (p SearchPopup) MoveLeft() SearchPopup {
 }
 
 // MoveRight moves the filter cursor right within the Sort row (cursor 0 → 1).
-// No-op when on the Filter row (cursor 2) or already at the rightmost Sort option.
+// No-op on the Filter row or when already at the rightmost Sort option.
 func (p SearchPopup) MoveRight() SearchPopup {
 	if p.focus == searchFocusFilter && p.filterCursor == 0 {
 		p.filterCursor = 1
