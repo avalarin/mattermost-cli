@@ -181,16 +181,16 @@ func (cv ChannelsView) OpenSelected() (ChannelsView, string) {
 	return cv, cv.SelectedChannelID()
 }
 
-// SetOpenByID sets openIdx to the item with the given channel ID.
+// SetOpenByID sets openIdx and selectedIdx to the item with the given channel ID
+// and clamps scroll so the item is visible. Used when a channel is opened from
+// outside the sidebar (e.g. search popup) so the cursor follows the selection.
 func (cv ChannelsView) SetOpenByID(channelID string) ChannelsView {
 	for i, item := range cv.items {
-		if item.isAll && channelID == allActivityID {
+		if (item.isAll && channelID == allActivityID) ||
+			(!item.isAll && item.channel.ID == channelID) {
 			cv.openIdx = i
-			return cv
-		}
-		if !item.isAll && item.channel.ID == channelID {
-			cv.openIdx = i
-			return cv
+			cv.selectedIdx = i
+			return cv.clampScroll()
 		}
 	}
 	return cv
