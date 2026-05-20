@@ -64,6 +64,8 @@ A terminal TUI client for Mattermost, built with Go and [Bubble Tea](https://git
 | `e` (in thread popup, author) | Insert `/edit <text>` into input |
 | `Esc` | Return to input / close popup |
 | `/` | Open command mode |
+| `Ctrl+C` (once) | Clear input / show exit hint |
+| `Ctrl+C` (twice) | Exit (alternative to `/quit`) |
 | `/quit` | Exit |
 
 ---
@@ -160,6 +162,7 @@ active_header_fg = "15"
 [channels]
 # sort = "alphabetical"             # "alphabetical" | "last_message"
 # unread_only = false
+# archived_only = false
 ```
 
 Environment variables override config file values:

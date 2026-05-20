@@ -49,12 +49,14 @@ model   = "claude-sonnet-4-6"
 enabled = false
 
 [ui]
-date_format          = "15:04"       # или "2006-01-02 15:04"
-message_limit        = 100           # сколько сообщений грузить при открытии канала
-theme                = "auto"        # "auto" | "dark" | "light"
-channels_width       = 22            # ширина боковой панели каналов (символов)
-channel_messages     = "root_only"   # "root_only" | "all"
-show_mode_indicator  = true          # показывать индикатор режима в статус-баре
+date_format             = "15:04"       # или "2006-01-02 15:04"
+full_date_format        = "02.01.2006"  # формат даты для старых сообщений (не сегодня)
+message_limit           = 100           # сколько сообщений грузить при открытии канала
+theme                   = "auto"        # "auto" | "dark" | "light"
+channels_width          = 22            # ширина боковой панели каналов (символов)
+channel_messages        = "root_only"   # "root_only" | "all"
+thread_popup_width_pct  = 70            # ширина popup треда в % от ширины терминала
+show_mode_indicator     = true          # показывать индикатор режима в статус-баре
 
 [channels]
 sort          = "alphabetical"   # "alphabetical" | "last_message"
@@ -313,7 +315,7 @@ mattermost-cli/
 │       ├── channel_filter_popup.go  # M2: popup поиска + сортировки + фильтрации (Ctrl+K)
 │       ├── channel_info_popup.go    # M2: popup информации о канале (i)
 │       └── views/
-│           └── feed.go              # M1: общая лента (All Activity)
+│           └── feed.go              # M1: исходная лента (устаревшая, заменена MessagesView)
 └── docs/
     ├── spec.md
     ├── backlog.md
@@ -388,12 +390,12 @@ Mark as read (при переключении на другой канал):
 
 | Область | Клавиши |
 |---|---|
-| Переключение панелей | `Ctrl+L` (channels), `Ctrl+J` (messages), `Ctrl+B + ←/↑/↓` (prefix) |
+| Переключение панелей | `Ctrl+L` (channels), `Ctrl+J` (messages), `Ctrl+B + ←/↑/→/↓` (prefix) |
 | Список каналов | `↑` / `↓`, `PgUp`/`PgDn` навигация; `Enter` открыть; `i` инфо о канале |
 | Список сообщений | `↑` / `↓`, `PgUp` / `PgDn`, `End` для последнего |
 | Thread popup | `↑` / `↓` навигация; `r` ответить; `e` редактировать; `Esc` закрыть |
 | Search/sort/filter popup | `Ctrl+K` открыть; `↑`/`↓` по результатам; `Enter` открыть/применить; `Esc` закрыть |
-| Поле ввода | Стандартные стрелки и текстовые биндинги; `Cmd+Enter` отправить |
+| Поле ввода | Стандартные стрелки и текстовые биндинги; `Enter` отправить, `Alt+Enter` перенос строки |
 | AI-панель | `Ctrl+A` — открыть/скрыть (планируется) |
 | Командная строка | `/` — открыть, `Esc` — закрыть |
 | Очистить ввод | `Ctrl+C` (при непустом поле) |
