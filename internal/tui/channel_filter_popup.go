@@ -46,6 +46,7 @@ type SearchPopup struct {
 	// local channel list (used when query < 2 runes)
 	localChannels []mattermost.Channel
 	unreadCounts  map[string]int
+	errMsg        string // non-empty when the last search returned a non-retryable error
 
 	// filter state
 	filter       ChannelFilterState
@@ -139,6 +140,15 @@ func (p SearchPopup) SetSearchResults(channels []mattermost.Channel, users []mat
 // SetSearching marks the popup as waiting for REST search results.
 func (p SearchPopup) SetSearching() SearchPopup {
 	p.searching = true
+	p.errMsg = ""
+	return p
+}
+
+// SetError clears the searching state and records a display error message.
+func (p SearchPopup) SetError(msg string) SearchPopup {
+	p.searching = false
+	p.errMsg = msg
+	p.results = nil
 	return p
 }
 
@@ -318,12 +328,15 @@ func (p SearchPopup) View(spinnerFrame string) string {
 	}
 	var resultLines []string
 	if len(p.results) == 0 {
-		msg := "No results"
-		if p.searching {
-			msg = "Searching..."
+		emptyText := "No results"
+		switch {
+		case p.searching:
+			emptyText = "Searching..."
+		case p.errMsg != "":
+			emptyText = p.errMsg
 		}
 		resultLines = []string{
-			lipgloss.NewStyle().Width(innerW).Foreground(lipgloss.Color("241")).Render("  " + msg),
+			lipgloss.NewStyle().Width(innerW).Foreground(lipgloss.Color("241")).Render("  " + emptyText),
 		}
 	} else {
 		start := 0
